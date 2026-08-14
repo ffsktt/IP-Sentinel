@@ -200,6 +200,33 @@ _ip_pool_dispatch() {
     done
 
     wait 2>/dev/null || true
+
+    # ----------------------------------------------------------
+    # [快速声呐] 每轮从 batch 中随机取 1 个 IP 做轻量送中探测
+    # 纯本地日志，不发 TG、不落趋势库；调用方注入 BIND_IP 后由
+    # mod_quality.sh 的 QC_MODE=fast 分支完成三核判定。
+    # ----------------------------------------------------------
+    if { [ "$ENABLE_GOOGLE" == "true" ] || [ "$ENABLE_TRUST" == "true" ]; } && [ ${#_IP_BATCH[@]} -gt 0 ] && [ -x "${INSTALL_DIR}/core/mod_quality.sh" ]; then
+        local qc_ip="${_IP_BATCH[$((RANDOM % ${#_IP_BATCH[@]}))]}"
+        local qc_pref="4"
+        local qc_safe="$qc_ip"
+        if [[ "$qc_ip" == *":"* ]]; then
+            qc_pref="6"
+            qc_safe="[${qc_ip}]"
+        fi
+
+        local qc_cfg
+        qc_cfg=$(mktemp /tmp/ip_sentinel_qc.XXXXXX)
+        cp "$orig_config" "$qc_cfg"
+        sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=\"${qc_safe}\"|" "$qc_cfg"
+        sed -i "s|^BIND_IP=.*|BIND_IP=\"${qc_safe}\"|" "$qc_cfg"
+        sed -i "s|^IP_PREF=.*|IP_PREF=\"${qc_pref}\"|" "$qc_cfg"
+
+        log "POOL" "INFO" "Fast QC: random batch IP -> ${qc_ip}"
+        QC_MODE=fast CONFIG_FILE="$qc_cfg" nice -n 19 bash "${INSTALL_DIR}/core/mod_quality.sh" 200>&- || true
+        rm -f "$qc_cfg"
+    fi
+
     _ip_pool_cleanup
     trap - EXIT
 

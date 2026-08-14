@@ -112,4 +112,13 @@ else
     log "SYSTEM" "ERROR" "配置了模块 ${MOD_NAME}，但未找到对应的可执行脚本: ${TARGET_MOD}"
 fi
 
+# ----------------------------------------------------------
+# [快速声呐] 单 IP 模式每轮固定追加轻量送中探测
+# 纯本地日志，不发 TG、不落趋势库，结果并入每日简报送中计数。
+# ----------------------------------------------------------
+if [ -x "${INSTALL_DIR}/core/mod_quality.sh" ]; then
+    log "SYSTEM" "INFO" "快速声呐: 单 IP 轻量送中探测启动"
+    QC_MODE=fast nice -n 19 bash "${INSTALL_DIR}/core/mod_quality.sh" 200>&- || true
+fi
+
 log "SYSTEM" "INFO" "本轮所有模块调度完毕，哨兵继续隐蔽待命。"

@@ -6,29 +6,49 @@
 
 source "${CONFIG_FILE:-/opt/ip_sentinel/config.conf}"
 
+# --- [环境预载] 若宿主环境未注入日志函数，则启动 Fallback 接管 ---
+if ! type log >/dev/null 2>&1; then
+    log() {
+        local local_ver="${AGENT_VERSION:-未知}"
+        local install_root="${INSTALL_DIR:-/opt/ip_sentinel}"
+        mkdir -p "${install_root}/logs"
+        local core_msg=$(printf "[v%-5s] [%-5s] [%-7s] [%s] %s" "$local_ver" "$2" "$1" "$REGION_CODE" "$3")
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $core_msg" >> "${install_root}/logs/sentinel.log"
+        if command -v logger >/dev/null 2>&1; then
+            logger -t ip-sentinel "$core_msg"
+        else
+            echo "$core_msg"
+        fi
+    }
+fi
+
 # ==========================================================
 # 0. Multi-IP pool: pick a random IP for this probe session
 # ==========================================================
 if [[ -n "$MULTI_IP_MODE" ]] || [[ -n "$NETNS_NAME" ]]; then
-    _QUALITY_POOL=()
-    _QP_IFACE="${NETNS_IFACE:-veth0}"
-    if ! ip link show "$_QP_IFACE" >/dev/null 2>&1; then
-        _QP_IFACE=$(ip -o link show up 2>/dev/null | awk -F'[ :]+' '$2 != "lo" {print $2; exit}')
-    fi
-    if [[ -n "$_QP_IFACE" ]]; then
-        _QP_PROTO="${IP_POOL_PROTO}"
-        if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"4"* ]]; then
-            while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
-                ip -4 addr show dev "$_QP_IFACE" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}')
+    # [快速声呐] fast 模式下沿用外部注入的 BIND_IP，避免 section 0 重选覆盖调用方指定的 IP
+    if [[ "${QC_MODE}" == "fast" && -n "$BIND_IP" ]]; then
+        :
+    else
+        _QUALITY_POOL=()
+        _QP_IFACE="${NETNS_IFACE:-veth0}"
+        if ! ip link show "$_QP_IFACE" >/dev/null 2>&1; then
+            _QP_IFACE=$(ip -o link show up 2>/dev/null | awk -F'[ :]+' '$2 != "lo" {print $2; exit}')
         fi
-        if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"6"* ]]; then
-            while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
-                ip -6 addr show dev "$_QP_IFACE" scope global 2>/dev/null | awk '/inet6 /{split($2,a,"/"); print a[1]}')
-        fi
-        if [[ -n "$IP_POOL_FILTER" ]] && [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
-            _QP_FILTERED=()
-            while IFS= read -r _a; do [[ -n "$_a" ]] && _QP_FILTERED+=("$_a"); done < <(
-                printf '%s\n' "${_QUALITY_POOL[@]}" | python3 -c "
+        if [[ -n "$_QP_IFACE" ]]; then
+            _QP_PROTO="${IP_POOL_PROTO}"
+            if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"4"* ]]; then
+                while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
+                    ip -4 addr show dev "$_QP_IFACE" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}')
+            fi
+            if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"6"* ]]; then
+                while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
+                    ip -6 addr show dev "$_QP_IFACE" scope global 2>/dev/null | awk '/inet6 /{split($2,a,"/"); print a[1]}')
+            fi
+            if [[ -n "$IP_POOL_FILTER" ]] && [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
+                _QP_FILTERED=()
+                while IFS= read -r _a; do [[ -n "$_a" ]] && _QP_FILTERED+=("$_a"); done < <(
+                    printf '%s\n' "${_QUALITY_POOL[@]}" | python3 -c "
 import ipaddress, sys
 nets = [ipaddress.ip_network(c.strip(), strict=False) for c in sys.argv[1].split(',') if c.strip()]
 for line in sys.stdin:
@@ -38,22 +58,132 @@ for line in sys.stdin:
         if any(ipaddress.ip_address(s) in n for n in nets): print(s)
     except ValueError: pass
 " "$IP_POOL_FILTER")
-            _QUALITY_POOL=("${_QP_FILTERED[@]}")
-        fi
-        if [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
-            _QP_IDX=$((RANDOM % ${#_QUALITY_POOL[@]}))
-            _QP_SELECTED="${_QUALITY_POOL[$_QP_IDX]}"
-            if [[ "$_QP_SELECTED" == *":"* ]]; then
-                PUBLIC_IP="[${_QP_SELECTED}]"
-                BIND_IP="[${_QP_SELECTED}]"
-                IP_PREF="6"
-            else
-                PUBLIC_IP="$_QP_SELECTED"
-                BIND_IP="$_QP_SELECTED"
-                IP_PREF="4"
+                _QUALITY_POOL=("${_QP_FILTERED[@]}")
+            fi
+            if [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
+                _QP_IDX=$((RANDOM % ${#_QUALITY_POOL[@]}))
+                _QP_SELECTED="${_QUALITY_POOL[$_QP_IDX]}"
+                if [[ "$_QP_SELECTED" == *":"* ]]; then
+                    PUBLIC_IP="[${_QP_SELECTED}]"
+                    BIND_IP="[${_QP_SELECTED}]"
+                    IP_PREF="6"
+                else
+                    PUBLIC_IP="$_QP_SELECTED"
+                    BIND_IP="$_QP_SELECTED"
+                    IP_PREF="4"
+                fi
             fi
         fi
     fi
+fi
+
+# ==========================================================
+# [快速声呐] QC_MODE=fast: 轻量三核送中探测 (Jump / YT Premium / YT Music)
+# 任一核心命中 CN 即判定送中。纯本地日志，不发 TG、不落趋势库。
+# ==========================================================
+if [[ "${QC_MODE}" == "fast" ]]; then
+    PROBE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    FAST_BIND_ARGS=()
+    if [[ -n "$BIND_IP" ]]; then
+        # curl --interface 不接受带方括号的 IPv6，必须剥离后绑定；
+        # 若出口 IP 已漂移丢失，则降级为系统默认路由出网（与 mod_google 防线一致）。
+        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+        if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+            FAST_BIND_ARGS=(--interface "$RAW_BIND_IP")
+        fi
+    fi
+    DYNAMIC_IP_PREF="-${IP_PREF:-4}"
+
+    extract_yt_gl() {
+        grep -Eo '"(contentRegion|countryCode|INNERTUBE_CONTEXT_GL|GL)":"[A-Za-z]{2}"' | head -n 1 | cut -d'"' -f4 | tr 'a-z' 'A-Z'
+    }
+
+    log "Quality" "START" "========== 唤醒快速声呐 [区域: $REGION_NAME] =========="
+    log "Quality" "INFO " "当前出网 IP: ${BIND_IP:-${PUBLIC_IP:-Unknown}}"
+
+    # 核心 1: URL 跳转探测
+    JUMP_GL=""
+    JUMP_HDR=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 10 -sI "http://www.google.com/")
+    JUMP_LOC=$(echo "$JUMP_HDR" | grep -i "^location:" | tr -d '\r\n')
+    if [ -z "$JUMP_LOC" ]; then
+        JUMP_GL=""
+    elif [[ "$JUMP_LOC" == *".google.cn"* ]] || [[ "$JUMP_LOC" == *"gl=CN"* ]]; then
+        JUMP_GL="CN"
+    elif [[ "$JUMP_LOC" == *"gl="* ]]; then
+        JUMP_GL=$(echo "$JUMP_LOC" | grep -o 'gl=[A-Za-z]\{2\}' | head -n 1 | cut -d'=' -f2 | tr 'a-z' 'A-Z')
+    else
+        JUMP_DOMAIN=$(echo "$JUMP_LOC" | grep -o 'google\.[a-z\.]*' | head -n 1 | sed 's/google\.//')
+        case "$JUMP_DOMAIN" in
+            "com") JUMP_GL="US" ;;
+            "com.hk") JUMP_GL="HK" ;;
+            "com.tw") JUMP_GL="TW" ;;
+            "co.jp") JUMP_GL="JP" ;;
+            "co.uk") JUMP_GL="GB" ;;
+            "co.kr") JUMP_GL="KR" ;;
+            "co.in") JUMP_GL="IN" ;;
+            "co.id") JUMP_GL="ID" ;;
+            "co.th") JUMP_GL="TH" ;;
+            "com.sg") JUMP_GL="SG" ;;
+            "com.my") JUMP_GL="MY" ;;
+            "com.au") JUMP_GL="AU" ;;
+            "com.br") JUMP_GL="BR" ;;
+            "com.mx") JUMP_GL="MX" ;;
+            "com.ar") JUMP_GL="AR" ;;
+            "co.za") JUMP_GL="ZA" ;;
+            "cn") JUMP_GL="CN" ;;
+            "")
+                JUMP_GL=""
+                ;;
+            *)
+                LAST_EXT=$(echo "$JUMP_DOMAIN" | awk -F'.' '{print $NF}' | tr 'a-z' 'A-Z')
+                if [ ${#LAST_EXT} -eq 2 ]; then
+                    JUMP_GL="$LAST_EXT"
+                else
+                    JUMP_GL="US"
+                fi
+                ;;
+        esac
+    fi
+
+    # 核心 2: YouTube Premium 区域锁嗅探
+    YT_PR_GL=""
+    YT_PR_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://www.youtube.com/premium")
+    if [[ "$YT_PR_HTML" == *"www.google.cn"* ]]; then
+        YT_PR_GL="CN"
+    else
+        YT_PR_GL=$(printf '%s' "$YT_PR_HTML" | extract_yt_gl)
+    fi
+
+    # 核心 3: YouTube Music 区域锁嗅探
+    YT_MU_GL=""
+    YT_MU_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://music.youtube.com/")
+    if [[ "$YT_MU_HTML" == *"www.google.cn"* ]]; then
+        YT_MU_GL="CN"
+    else
+        YT_MU_GL=$(printf '%s' "$YT_MU_HTML" | extract_yt_gl)
+    fi
+
+    # [终极审判] 任一核心命中 CN 即判定送中
+    IS_CN=0
+    VALID_PROBES=0
+    for val in "$JUMP_GL" "$YT_PR_GL" "$YT_MU_GL"; do
+        if [ -n "$val" ]; then
+            ((VALID_PROBES++))
+            [ "$val" == "CN" ] && IS_CN=1
+        fi
+    done
+
+    if [ $VALID_PROBES -eq 0 ]; then
+        FAST_STATUS="⚠️ 探针失效 (三核全部熔断，可能遭严重风控拦截)"
+    elif [ $IS_CN -eq 1 ]; then
+        FAST_STATUS="❌ 快速声呐判定 IP 已被中国大陆锁定 (送中)！"
+    else
+        FAST_STATUS="✅ 区域正常 (Jump: ${JUMP_GL:-无} | Prem: ${YT_PR_GL:-无} | Music: ${YT_MU_GL:-无})"
+    fi
+
+    log "Quality" "SCORE" "自检结论: $FAST_STATUS"
+    log "Quality" "END  " "========== 快速声呐结束，释放进程 =========="
+    exit 0
 fi
 
 # ==========================================================

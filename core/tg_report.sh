@@ -146,6 +146,13 @@ else
 📡 **出口 IP**: \`${CURRENT_IP}\`
 🛡️ **IP 属性**: ${IP_TYPE}"
 
+    # [快速声呐] Quality 快速检测模块统计 (送中判定补充口径)
+    # fast 探测在任一养护模块开启时均会执行，故统计独立于 Google 板块：
+    # Google 开启时并入其送中计数，仅 Trust 开启时单独追加。
+    QUALITY_LOGS=$(echo "$LOG_CONTENT" | grep "\[Quality")
+    Q_TOTAL=$(echo "$QUALITY_LOGS" | grep "\[START\]" -c)
+    Q_CN=$(echo "$QUALITY_LOGS" | grep "❌" -c)
+
     # 统计 Google 纠偏阵列数据
     if [ "$ENABLE_GOOGLE" == "true" ]; then
         GOOGLE_LOGS=$(echo "$LOG_CONTENT" | grep "\[Google")
@@ -153,15 +160,18 @@ else
         G_SUCCESS=$(echo "$GOOGLE_LOGS" | grep "✅" -c)
         G_FAILED=$(echo "$GOOGLE_LOGS" | grep "❌" -c)
         G_WARN=$(echo "$GOOGLE_LOGS" | grep "⚠️" -c)
-        
+
         G_RATE="0.0"
         [ "$G_TOTAL" -gt 0 ] && G_RATE=$(awk "BEGIN {printf \"%.1f\", ($G_SUCCESS/$G_TOTAL)*100}")
+
+        TOTAL_CN=$(( G_FAILED + Q_CN ))
 
         MSG="$MSG
 
 🎯 **[Google 区域纠偏]**
 🚀 执行总数: ${G_TOTAL} 次 (胜率: **${G_RATE}%**)
-✅ 成功: ${G_SUCCESS} | ❌ 送中: ${G_FAILED} | ⚠️ 警告: ${G_WARN}"
+✅ 成功: ${G_SUCCESS} | ❌ 送中: ${TOTAL_CN} | ⚠️ 警告: ${G_WARN}
+📡 快速声呐: ${Q_TOTAL} 次探测 (送中: ${Q_CN})"
     fi
 
     # 统计 Trust 净化阵列数据
@@ -179,6 +189,13 @@ else
 🔰 **[IP 信用净化]**
 🚀 净化总数: ${T_TOTAL} 轮 (成功率: **${T_RATE}%**)
 ✅ 成功注入: ${T_SUCCESS} | ❌ 访问受阻: ${T_FAILED}"
+
+        # 仅 Trust 开启时 (Google 板块未展示)，快速声呐统计独立追加
+        if [ "$ENABLE_GOOGLE" != "true" ] && [ "${Q_TOTAL:-0}" -gt 0 ]; then
+            MSG="$MSG
+
+📡 快速声呐: ${Q_TOTAL} 次探测 (送中: ${Q_CN})"
+        fi
     fi
 
     # 追加末次快照
