@@ -50,16 +50,23 @@ NODE_ALIAS="${NODE_ALIAS:-$NODE_NAME}"
 CURL_BIND_OPT=""
 DYNAMIC_IP_PREF="-${IP_PREF:-4}"
 
-if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
-    RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
-    if ! ip addr show 2>/dev/null | grep -qw "$RAW_BIND_IP"; then
-        CURL_BIND_OPT=""
-    else
-        CURL_BIND_OPT="--interface $BIND_IP"
-        if [[ "$BIND_IP" == *":"* ]]; then
-            DYNAMIC_IP_PREF="-6"
-        elif [[ "$BIND_IP" == *"."* ]]; then
-            DYNAMIC_IP_PREF="-4"
+if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
+    # [v4.x] 统一出网构建：源 IP 锁定 + DoH 绕行
+    source "${INSTALL_DIR}/core/net_common.sh"
+    sentinel_net_init
+    CURL_BIND_OPT="${CURL_BIND_ARGS[*]}"
+else
+    if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
+        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+        if ! ip addr show 2>/dev/null | grep -qw "$RAW_BIND_IP"; then
+            CURL_BIND_OPT=""
+        else
+            CURL_BIND_OPT="--interface $BIND_IP"
+            if [[ "$BIND_IP" == *":"* ]]; then
+                DYNAMIC_IP_PREF="-6"
+            elif [[ "$BIND_IP" == *"."* ]]; then
+                DYNAMIC_IP_PREF="-4"
+            fi
         fi
     fi
 fi
@@ -196,6 +203,16 @@ else
 
 📡 快速声呐: ${Q_TOTAL} 次探测 (送中: ${Q_CN})"
         fi
+    fi
+
+    # [DNS 链路健康] DoH 降级与疑似劫持统计（仅在命中时渲染）
+    DOH_FB_COUNT=$(echo "$LOG_CONTENT" | grep -c "DOH_FALLBACK")
+    DNS_HJ_COUNT=$(echo "$LOG_CONTENT" | grep -c "DNS_HIJACK_SUSPECT")
+    if [ "$DOH_FB_COUNT" -gt 0 ] || [ "$DNS_HJ_COUNT" -gt 0 ]; then
+        MSG="$MSG
+
+⚠️ **[DNS 链路健康]**
+🔻 DoH 降级系统解析: ${DOH_FB_COUNT} 次 | 🕸️ 疑似 DNS 劫持: ${DNS_HJ_COUNT} 次"
     fi
 
     # 追加末次快照

@@ -219,6 +219,7 @@ IP_PREF="$IP_PREF"
 PUBLIC_IP="$SAFE_PUBLIC_IP"
 BIND_IP="$BIND_IP"
 COMM_IP="$SAFE_COMM_IP"
+PROBE_DOH_URLS="https://1.1.1.1/dns-query,https://[2606:4700:4700::1111]/dns-query,https://185.222.222.222/dns-query,https://[2a09::]/dns-query"
 
 NODE_NAME="$NODE_NAME"
 NODE_ALIAS="$NODE_ALIAS"
@@ -365,6 +366,11 @@ IP_BATCH_SIZE="5"
 IP_CONCURRENCY="3"
 MIPEOF
             echo -e " \033[33m⚠️ [平滑迁移] 已追加 Multi-IP 配置字段 (默认禁用)\033[0m"
+        fi
+
+        if ! grep -q "^PROBE_DOH_URLS=" "$CONFIG_FILE"; then
+            echo 'PROBE_DOH_URLS="https://1.1.1.1/dns-query,https://[2606:4700:4700::1111]/dns-query,https://185.222.222.222/dns-query,https://[2a09::]/dns-query"' >> "$CONFIG_FILE"
+            echo -e " \033[33m⚠️ [平滑迁移] 已追加 PROBE_DOH_URLS 配置 (DoH 绕行多端点)\033[0m"
         fi
 
         if ! grep -q "^REPO_RAW_URL=" "$CONFIG_FILE"; then

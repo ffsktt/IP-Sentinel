@@ -61,6 +61,7 @@ do_deploy_core() {
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_trust.sh" -o "${TMP_CORE}/mod_trust.sh"
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_quality.sh" -o "${TMP_CORE}/mod_quality.sh"
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/ip_pool.sh" -o "${TMP_CORE}/ip_pool.sh" 2>/dev/null || true
+    curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/net_common.sh" -o "${TMP_CORE}/net_common.sh" 2>/dev/null || true
 
     # 🛡️ 终极自检墙：一旦任意文件缺失或长度为零，直接熔断放弃覆写，确保宿主不宕机
     if [ ! -s "${TMP_CORE}/runner.sh" ] || [ ! -s "${TMP_CORE}/agent_daemon.sh" ]; then

@@ -9,6 +9,7 @@
 - **CIDR 过滤** — 从 netns 接口地址中按前缀筛选需要养护的子集
 - **有限并发** — 可配置的批量大小和并发数，串行轮转，不会产生高并发
 - **代码/数据 URL 分离** — 代码 OTA 从本 fork 拉取，数据更新从上游拉取，rebase 零冲突
+- **DoH 出网绕行** — 探测/纠偏流量通过多端点 DoH 直连解析，绕开 sniproxy 的 DNS 劫持
 
 ## 与上游的关系
 
@@ -94,6 +95,28 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/
 | `IP_POOL_FILTER` | CIDR include 过滤（逗号分隔前缀） | `""` |
 | `IP_BATCH_SIZE` | 每次 runner 调度处理的 IP 数 | `5` |
 | `IP_CONCURRENCY` | 并发养护槽位数 | `3` |
+| `PROBE_DOH_URLS` | 逗号分隔的 DoH 端点列表（v4/v6 双栈），留空禁用 DoH 绕行 | 见下 |
+
+### sniproxy 劫持环境绕行
+
+部分节点使用 sniproxy 将 Google 锁区资源劫持到独立路径解锁。劫持通常有两种形态：
+
+- **形态 A — DNS 劫持**：dnsmasq 把 `google.com` 等解析到中转/假 IP，再由 iptables REDIRECT 接管。此形态已被自动绕行：探测/纠偏流量通过 `PROBE_DOH_URLS` 多端点 DoH 直连解析（按源 IP 族自适应选端点，端点失效自动降级），确保从指定 source IP 直连真实目标。
+- **形态 B — 网段劫持**：iptables 按 Google 真实网段 ipset 直接 REDIRECT。此形态在应用层无法绕行，需在节点防火墙对 sentinel 进程放行，例如：
+
+```bash
+# 让 root 跑的 curl 绕过劫持链（按需调整 uid / 接口）
+iptables -t nat -I OUTPUT -m owner --uid-owner root -j RETURN
+```
+
+默认 `PROBE_DOH_URLS`：
+
+```
+https://1.1.1.1/dns-query,https://[2606:4700:4700::1111]/dns-query,https://185.222.222.222/dns-query,https://[2a09::]/dns-query
+```
+
+- 全部端点不可用时自动回退系统 DNS，并在每日简报的「DNS 链路健康」板块标记降级次数；系统解析得到非公网地址（疑似劫持）同样会标记。
+- 留空 `PROBE_DOH_URLS=""` 可整体禁用绕行，恢复旧行为。
 
 **验证**：
 

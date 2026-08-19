@@ -22,6 +22,11 @@ if ! type log >/dev/null 2>&1; then
     }
 fi
 
+# [v4.x] 统一出网构建器（DoH 绕行 + 源 IP 锁定），缺失时走下方各分支的内联兜底
+if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
+    source "${INSTALL_DIR}/core/net_common.sh"
+fi
+
 # ==========================================================
 # 0. Multi-IP pool: pick a random IP for this probe session
 # ==========================================================
@@ -84,15 +89,20 @@ fi
 if [[ "${QC_MODE}" == "fast" ]]; then
     PROBE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     FAST_BIND_ARGS=()
-    if [[ -n "$BIND_IP" ]]; then
-        # curl --interface 不接受带方括号的 IPv6，必须剥离后绑定；
-        # 若出口 IP 已漂移丢失，则降级为系统默认路由出网（与 mod_google 防线一致）。
-        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
-        if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
-            FAST_BIND_ARGS=(--interface "$RAW_BIND_IP")
+    DYNAMIC_IP_PREF="-${IP_PREF:-4}"
+    if declare -f sentinel_net_init >/dev/null 2>&1; then
+        sentinel_net_init
+        FAST_BIND_ARGS=("${CURL_BIND_ARGS[@]}")
+    else
+        if [[ -n "$BIND_IP" ]]; then
+            # curl --interface 不接受带方括号的 IPv6，必须剥离后绑定；
+            # 若出口 IP 已漂移丢失，则降级为系统默认路由出网（与 mod_google 防线一致）。
+            RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+            if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+                FAST_BIND_ARGS=(--interface "$RAW_BIND_IP")
+            fi
         fi
     fi
-    DYNAMIC_IP_PREF="-${IP_PREF:-4}"
 
     extract_yt_gl() {
         grep -Eo '"(contentRegion|countryCode|INNERTUBE_CONTEXT_GL|GL)":"[A-Za-z]{2}"' | head -n 1 | cut -d'"' -f4 | tr 'a-z' 'A-Z'
@@ -213,6 +223,14 @@ fi
 # 补齐协议版本参数 (-4 或 -6)
 PROBE_ARGS+=("-${DYNAMIC_IP_PREF}")
 
+# [v4.x] 选定 DoH 端点，供第三方探测脚本的 CURL_HOME 注入使用
+# 注意：完整模式 DYNAMIC_IP_PREF 为无连字符形式 ("4"/"6")，需在 init 后还原
+if declare -f sentinel_net_init >/dev/null 2>&1; then
+    _SAVE_IP_PREF="$DYNAMIC_IP_PREF"
+    sentinel_net_init
+    DYNAMIC_IP_PREF="$_SAVE_IP_PREF"
+fi
+
 # ----------------------------------------------------------
 # 2. 智能拉取引擎 (防 RCE 与 文件防伪校验)
 # ----------------------------------------------------------
@@ -279,7 +297,19 @@ fi
 # ==========================================================
 
 # 确保连通性后执行探测，放宽超时阈值以给予第三方 API 充足响应时间
-RAW_OUTPUT=$(timeout 300 bash "$PROBE_SCRIPT" "${FINAL_ARGS[@]}" 2>/dev/null)
+# [v4.x] 通过 CURL_HOME/.curlrc 注入 DoH，绕开系统 DNS（仅在成功选定端点时生效）
+SENTINEL_CURL_HOME=""
+if declare -f sentinel_make_doh_curlrc >/dev/null 2>&1; then
+    SENTINEL_CURL_HOME=$(sentinel_make_doh_curlrc)
+fi
+if [[ -n "$SENTINEL_CURL_HOME" ]]; then
+    RAW_OUTPUT=$(CURL_HOME="$SENTINEL_CURL_HOME" timeout 300 bash "$PROBE_SCRIPT" "${FINAL_ARGS[@]}" 2>/dev/null)
+    if declare -f sentinel_rm_doh_curlrc >/dev/null 2>&1; then
+        sentinel_rm_doh_curlrc "$SENTINEL_CURL_HOME"
+    fi
+else
+    RAW_OUTPUT=$(timeout 300 bash "$PROBE_SCRIPT" "${FINAL_ARGS[@]}" 2>/dev/null)
+fi
 JSON_DATA="{${RAW_OUTPUT#*\{}"
 ESC=$(printf '\033')
 JSON_DATA=$(printf "%s" "$JSON_DATA" | sed -e "s/${ESC}\[[0-9;]*[a-zA-Z]//g" -e "s/${ESC}[0-9;]*[a-zA-Z]//g" -e "s/x1b\\[[0-9;]*[a-zA-Z]//g" -e "s/x1b[0-9;]*[a-zA-Z]//g")

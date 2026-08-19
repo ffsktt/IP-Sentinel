@@ -151,21 +151,27 @@ log "$MODULE_NAME" "INFO " "Cookie 身份库已挂载: ${COOKIE_FILE}"
 CURL_BIND_ARGS=()
 DYNAMIC_IP_PREF="-${IP_PREF:-4}"
 
-if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
-    # [防线校验] 探测物理网卡存活状态，防 IP 漂移引发通信雪崩
-    RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
-    # [v4.1.5 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致网卡死锁失效
-    if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
-    log "$MODULE_NAME" "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
-    CURL_BIND_ARGS=()
-    else
-        CURL_BIND_ARGS=(--interface "$BIND_IP")
-        if [[ "$BIND_IP" == *":"* ]]; then
-            DYNAMIC_IP_PREF="-6"
-            log "$MODULE_NAME" "INFO " "底层路由锁定: 绑定 IPv6 出口及协议 ($BIND_IP)"
-        elif [[ "$BIND_IP" == *"."* ]]; then
-            DYNAMIC_IP_PREF="-4"
-            log "$MODULE_NAME" "INFO " "底层路由锁定: 绑定 IPv4 出口及协议 ($BIND_IP)"
+if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
+    # [v4.x] 统一出网构建：源 IP 锁定 + DoH 绕行（多端点/族自适应/降级自检）
+    source "${INSTALL_DIR}/core/net_common.sh"
+    sentinel_net_init
+else
+    if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
+        # [防线校验] 探测物理网卡存活状态，防 IP 漂移引发通信雪崩
+        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+        # [v4.1.5 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致网卡死锁失效
+        if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+        log "$MODULE_NAME" "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
+        CURL_BIND_ARGS=()
+        else
+            CURL_BIND_ARGS=(--interface "$BIND_IP")
+            if [[ "$BIND_IP" == *":"* ]]; then
+                DYNAMIC_IP_PREF="-6"
+                log "$MODULE_NAME" "INFO " "底层路由锁定: 绑定 IPv6 出口及协议 ($BIND_IP)"
+            elif [[ "$BIND_IP" == *"."* ]]; then
+                DYNAMIC_IP_PREF="-4"
+                log "$MODULE_NAME" "INFO " "底层路由锁定: 绑定 IPv4 出口及协议 ($BIND_IP)"
+            fi
         fi
     fi
 fi

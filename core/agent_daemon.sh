@@ -29,7 +29,13 @@ NODE_ALIAS="${NODE_ALIAS:-$NODE_NAME}"
 # ----------------------------------------------------------
 # [网络侦测] 实时公网 IP 嗅探与静默状态更新
 # ----------------------------------------------------------
-RAW_IP=$(curl -${IP_PREF:-4} -s -m 5 api.ip.sb/ip | tr -d '[:space:]')
+if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
+    source "${INSTALL_DIR}/core/net_common.sh"
+    sentinel_net_init doh-only
+    RAW_IP=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -s -m 5 api.ip.sb/ip | tr -d '[:space:]')
+else
+    RAW_IP=$(curl -${IP_PREF:-4} -s -m 5 api.ip.sb/ip | tr -d '[:space:]')
+fi
 
 # [防线/容灾] 为 IPv6 自动装载方括号护甲；API 失效时退回静态配置锚点
 if [ -n "$RAW_IP" ]; then
