@@ -96,6 +96,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/
 | `IP_BATCH_SIZE` | 每次 runner 调度处理的 IP 数，需与 `IP_CONCURRENCY` 搭配控制在调度预算内（见下） | `5` |
 | `IP_CONCURRENCY` | 并发养护槽位数，需与 `IP_BATCH_SIZE` 搭配控制在调度预算内（见下） | `3` |
 | `PROBE_DOH_URLS` | 逗号分隔的 DoH 端点列表（v4/v6 双栈），留空禁用 DoH 绕行 | 见下 |
+| `PROBE_DOH_TTL` | DoH 端点选择结果的缓存秒数，`0` 表示每会话重新探测 | `1800` |
 | `LOG_MAX_BYTES` | `sentinel.log` 轮转阈值（字节），超过则轮转为 `.1` | `52428800`（50 MiB） |
 
 > **调度预算约束**：runner 由 cron 每 20 分钟触发一次，`core/runner.sh` 内部用 `flock -n` 防重入——若一轮跑不完 20 分钟，下一个 tick 会被整轮丢弃（而不是只丢尾巴）。一轮需要 `ceil(IP_BATCH_SIZE / IP_CONCURRENCY)` 波，按单会话 p99 约 260 秒估算，安全判据为 `ceil(batch/conc) × 260 < 1020` 秒（1020 = 1200 秒周期减去 180 秒安全余量）。实测参考值 `120 / 40`：makespan p99 约 15 分钟，可吃住 30% 的网络/CPU 劣化，对应每个 IP 每天约 8.6 次养护、巡回间隔约 2.8 小时，建议以此为基准起步。不建议 `160 / 40`：p99 约 17 分钟，对 20 分钟预算只剩 14% 余量，且该余量未计入 DoH 解析和并发 CPU 争抢的开销。超出预算时 `core/ip_pool.sh` 会在日志里打出 `Schedule budget exceeded` 告警，可作为配置是否过载的信号。
@@ -145,12 +146,15 @@ cat /opt/ip_sentinel/core/.ip_pool_cursor
 - 按网段分组的送中率与环比
 - 送中样本、信用净化成功率
 - DNS 链路健康（DoH 降级次数、疑似劫持标记）
+- **出口绑定异常**：Google 观测到的源地址与任务绑定的地址不一致，说明 `--interface` 未生效（策略路由 / netns 配置问题），该 IP 的区域裁决其实描述的是别的地址。此项优先级高于其余所有指标——绑定失效会让区域数字整体失真，而不只是劣化
 
 网段分组取自 `IP_POOL_FILTER`（按首次命中匹配）；未配置过滤时按 IPv4 `/24`、IPv6 `/48` 自动聚合。网段表按送中率降序排列，只渲染前 8 段，其余折叠为一行汇总——这是受 Telegram 单条消息 4096 字符上限约束的取舍。
 
 **`轮次 X/72` 是判断调度健康的关键指标**：在 20 分钟周期下 24 小时理论上限是 72 轮，稳定在 70 以上说明 `IP_BATCH_SIZE`/`IP_CONCURRENCY` 配置在调度预算内；明显偏低则说明单轮 makespan 超出周期，正在被 `flock` 整轮丢弃，应参考上文的调度预算约束下调 batch/concurrency。
 
-简报数据来源是 `/opt/ip_sentinel/state/events-YYYYMMDD.tsv` 结构化事件流，**不再依赖日志文本 grep**。原先靠 grep 日志的做法在池节点上一轮往往覆盖不到全部 IP，导致统计失真。事件流为制表符分隔，字段依次为 `时间戳 / IP / 模块 / 裁决 / 明细`，模块取值 `geo`、`trust`、`fastqc`、`dns`、`round`；保留 3 天，由 `core/updater.sh` 清理。
+简报数据来源是 `/opt/ip_sentinel/state/events-YYYYMMDD.tsv` 结构化事件流，**不再依赖日志文本 grep**。原先靠 grep 日志的做法在池节点上一轮往往覆盖不到全部 IP，导致统计失真。事件流为制表符分隔，字段依次为 `时间戳 / IP / 模块 / 裁决 / 明细`，模块取值 `geo`、`trust`、`fastqc`、`dns`、`egress`、`round`；保留 3 天，由 `core/updater.sh` 清理。
+
+区域探针走 YouTube 的 `sw.js_data`（约 1.5 KB，取代原先 `/premium` 的 ~92 KB 与 `music.youtube.com` 首页的 ~43 KB），其载荷同时给出 **Google 实际观测到的出口 IP**，`egress` 事件即由此比对产生。该端点未公开，版式变更时自动退回旧的整页正则提取。
 
 ```bash
 # 当日各裁决计数（示例：geo 模块）

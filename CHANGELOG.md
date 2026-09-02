@@ -2,6 +2,16 @@
 
 ## [fork]
 
+### 🐛 Bug Fixes
+- **`BLIND` verdict was unreachable in `mod_google.sh`** — the jump probe fell back to a hardcoded `"US"` when `http://www.google.com/` returned no `Location`, which is now the normal case (Google dropped ccTLD redirection in 2017 and folded every ccTLD back into `google.com` in 2025, so the request answers `200` directly). `VALID_PROBES` was therefore permanently `>=1`: a total probe outage was filed as `DRIFT`, inflating the drift column, and non-US nodes logged a permanent "Jump 副雷达漂移至 US". Now reports "no signal", matching what `mod_quality.sh`'s fast branch already did
+- **`Accept-Language` contradicted the session persona** — `mod_trust.sh` sent `en-US,en;q=0.9` for every region while `mod_google.sh` sent none at all, against a localized `hl=` and a hash-seeded local UA. Both now derive the header from the region's `LANG_PARAMS` via `sentinel_accept_language()`; this also gives `LANG_ACCEPT` a value, which `mod_google.sh` had been reading for the ecosystem-roam `?hl=` without it ever being assigned anywhere in the repo
+- **IPv6 source pinning broken on the inline fallback path** — `mod_google.sh` and `mod_trust.sh` passed `--interface "$BIND_IP"` with the brackets `ip_pool.sh` writes into the per-job config; `net_common.sh` already stripped them, so this only bit when `net_common.sh` was absent
+- **`IP_CONCURRENCY` could be ignored entirely** — `(wait -n 2>/dev/null; true)` is unconditionally true because `; true` swallows the return value, so on bash < 4.3 the reap step never blocked and the whole batch went concurrent at once. Replaced with a `BASH_VERSINFO` check
+
+### ⚡ Performance
+- **YouTube region probe via `sw.js_data`** — ~1.5 KB replaces the ~92 KB `/premium` page and ~43 KB `music.youtube.com` landing page (measured with `--compressed`), cutting ~135 KB per probing session. The payload also carries the egress IP Google actually observed, so `sentinel_check_egress()` can verify that `--interface` pinning survived the node's routing — previously nothing anywhere checked this, and a netns/policy-routing misconfiguration would silently make the entire pool measure a single address. Mismatches are emitted as `egress` events and surfaced in the fleet report above every other metric. The endpoint is undocumented, so a layout change degrades to the old full-page regex rather than breaking
+- **DoH endpoint selection is cached per address family** — `sentinel_net_init` runs once per session and a pool node opens ~8.6k sessions/day, so the old code spent one `example.com` round trip per session (and up to 4x6s whenever the leading endpoints were down). `PROBE_DOH_TTL` (default 1800s, `0` disables) collapses that to a couple of probes per hour; a `PROBE_DOH_URLS` edit invalidates the cache
+
 ### ✨ Features
 - **Multi-IP pool support** — single Agent can maintain hundreds of IPs via round-robin batch dispatch
 - **Network namespace integration** — systemd units auto-prefixed with `ip netns exec` when `NETNS_NAME` is set

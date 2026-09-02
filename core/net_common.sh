@@ -42,9 +42,11 @@ _sentinel_net_log() {
 #
 # Schema (tab-separated):
 #   ts  ip  module  verdict  detail
-#   module  : geo | trust | fastqc | round
+#   module  : geo | trust | fastqc | dns | egress | round
 #   verdict : OK | DRIFT | CN | BLIND   (geo, fastqc)
 #             OK | BLOCKED              (trust)
+#             DOH_FALLBACK | HIJACK     (dns)
+#             MISMATCH                  (egress)
 #             -                         (round)
 # ==========================================================
 sentinel_event() {
@@ -72,6 +74,37 @@ _sentinel_is_private_ip() {
     [[ "$ip" =~ ^198\.1[89]\. ]]
 }
 
+# ==========================================================
+# Accept-Language derived from the region's LANG_PARAMS
+#
+# mod_trust used to send en-US,en;q=0.9 for every region and mod_google sent no
+# Accept-Language at all, so a JP/HK/DE session advertised a localized hl= and a
+# local persona over a US language header. Browsers lead with a region-qualified
+# tag, and hl= is often bare ("ja"), so the region is borrowed from gl=.
+#   hl=zh-HK&gl=HK -> zh-HK,zh;q=0.9,en;q=0.8
+#   hl=ja&gl=JP    -> ja-JP,ja;q=0.9,en;q=0.8
+#   hl=en&gl=GB    -> en-GB,en;q=0.9
+# ==========================================================
+sentinel_accept_language() {
+    local hl="" gl="" tag primary
+    [[ "$LANG_PARAMS" == *"hl="* ]] && { hl="${LANG_PARAMS#*hl=}"; hl="${hl%%&*}"; }
+    [[ "$LANG_PARAMS" == *"gl="* ]] && { gl="${LANG_PARAMS#*gl=}"; gl="${gl%%&*}"; }
+
+    [[ "$hl" =~ ^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$ ]] || { echo "en-US,en;q=0.9"; return 0; }
+
+    tag="$hl"
+    if [[ "$hl" != *-* && "$gl" =~ ^[A-Za-z]{2}$ ]]; then
+        tag="${hl}-$(printf '%s' "$gl" | tr 'a-z' 'A-Z')"
+    fi
+    primary="${tag%%-*}"
+
+    if [ "$primary" = "en" ]; then
+        echo "${tag},en;q=0.9"
+    else
+        echo "${tag},${primary};q=0.9,en;q=0.8"
+    fi
+}
+
 # functional probe of a candidate endpoint (also validates curl --doh-url support)
 _sentinel_doh_ok() {
     local url="$1"
@@ -80,10 +113,64 @@ _sentinel_doh_ok() {
     return $?
 }
 
+# ----------------------------------------------------------
+# Selected-endpoint cache
+#
+# sentinel_net_init runs once per session and a pool node opens ~8.6k sessions a
+# day, so re-probing every candidate every time cost one example.com round trip
+# per session — and up to 4x6s whenever the leading endpoints were down. Caching
+# the winner per address family collapses that to a couple of probes per hour.
+# PROBE_DOH_TTL=0 restores the previous probe-every-session behaviour.
+# ----------------------------------------------------------
+_sentinel_doh_cache_file() {
+    echo "${INSTALL_DIR:-/opt/ip_sentinel}/state/.doh_endpoint.${1:-any}"
+}
+
+_sentinel_doh_cache_get() {
+    local f ts url now
+    f=$(_sentinel_doh_cache_file "$1")
+    [ -r "$f" ] || return 1
+    IFS=$'\t' read -r ts url < "$f" 2>/dev/null || return 1
+    [[ "$ts" =~ ^[0-9]+$ ]] && [ -n "$url" ] || return 1
+    now=$(date -u +%s)
+    [ $(( now - ts )) -lt "${PROBE_DOH_TTL:-1800}" ] || return 1
+
+    # A config edit must invalidate the cache, so the hit has to still be listed.
+    # Compared element-wise rather than by pattern: an IPv6 endpoint URL carries
+    # "[2606:4700:4700::1111]", which both a glob match and unquoted word
+    # splitting would read as a character class.
+    local cand hit=1 _arr
+    IFS=',' read -r -a _arr <<< "${PROBE_DOH_URLS// /}"
+    for cand in "${_arr[@]}"; do
+        [ "$cand" = "$url" ] && { hit=0; break; }
+    done
+    [ "$hit" -eq 0 ] || return 1
+
+    SENTINEL_DOH_URL="$url"
+}
+
+_sentinel_doh_cache_put() {
+    local f tmp
+    f=$(_sentinel_doh_cache_file "$1")
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+    # Atomic replace: IP_CONCURRENCY writers may refresh the same file at once.
+    tmp=$(mktemp "${f}.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s\t%s\n' "$(date -u +%s)" "$2" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
+    return 0
+}
+
 # multi-endpoint, family-aware DoH selection; first reachable endpoint wins
 _sentinel_select_doh() {
     local fam="$1"
     [ -n "$PROBE_DOH_URLS" ] || return 0
+
+    if [ "${PROBE_DOH_TTL:-1800}" -gt 0 ] 2>/dev/null && _sentinel_doh_cache_get "${fam:-any}"; then
+        return 0
+    fi
 
     local _doh_arr cand host
     IFS=',' read -r -a _doh_arr <<< "$PROBE_DOH_URLS"
@@ -99,6 +186,7 @@ _sentinel_select_doh() {
 
         if _sentinel_doh_ok "$cand"; then
             SENTINEL_DOH_URL="$cand"
+            _sentinel_doh_cache_put "${fam:-any}" "$cand"
             _sentinel_net_log "INFO " "DoH endpoint selected: ${cand}"
             return 0
         fi
@@ -186,4 +274,82 @@ sentinel_make_doh_curlrc() {
 
 sentinel_rm_doh_curlrc() {
     [[ -n "$1" && -d "$1" ]] && rm -rf "$1" 2>/dev/null || true
+}
+
+# ==========================================================
+# YouTube region probe
+#
+# sw.js_data is the service-worker bootstrap payload: ~1.5 KB against the ~92 KB
+# /premium page and ~43 KB music.youtube.com landing page it replaces (measured
+# with --compressed). Its fourth field is the egress IP Google actually observed,
+# which is the only end-to-end proof that --interface pinning survived the node's
+# routing — a silent failure there makes the whole pool measure one address.
+#
+#   )]}'\n[["yt.sw.adr",null,[[["<hl>","<gl>",null,"<observed ip>",...
+#
+# Undocumented endpoint, so a layout change must degrade rather than break:
+# callers fall back to the HTML probe when this returns non-zero. Results land in
+# globals rather than stdout because the observed IP has to escape the call, and
+# a $(...) capture would strand it in a subshell.
+# ==========================================================
+SENTINEL_PROBE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+SENTINEL_YT_GL=""
+SENTINEL_YT_IP=""
+
+sentinel_yt_probe() {
+    local host="$1" body field
+    SENTINEL_YT_GL=""
+    SENTINEL_YT_IP=""
+
+    body=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed \
+        -A "${PROBE_UA:-$SENTINEL_PROBE_UA}" "https://${host}/sw.js_data" 2>/dev/null) || return 1
+
+    if [[ "$body" == *"www.google.cn"* ]]; then
+        SENTINEL_YT_GL="CN"
+        return 0
+    fi
+
+    field=$(printf '%s' "$body" \
+        | grep -oE '"[a-zA-Z-]{2,10}","[A-Z]{2}",null,"[0-9a-fA-F.:]*"' | head -n 1)
+    [ -n "$field" ] || return 1
+
+    SENTINEL_YT_GL=$(printf '%s' "$field" | cut -d'"' -f4)
+    SENTINEL_YT_IP=$(printf '%s' "$field" | cut -d'"' -f6)
+    return 0
+}
+
+# Compare the egress IP Google observed against the one this session was told to
+# bind. A mismatch means --interface never took effect (policy routing, netns
+# misconfiguration), i.e. the verdict recorded for this IP belongs to another.
+sentinel_check_egress() {
+    local expected="$1" observed="$2"
+    [ -n "$expected" ] && [ -n "$observed" ] || return 0
+
+    # mod_google's CURRENT_IP degrades to the literal "Unknown" when neither
+    # PUBLIC_IP nor BIND_IP is set (a plain single-IP node), which is not an
+    # address to compare against — reporting it would be a guaranteed false
+    # positive on every such session.
+    case "$expected" in
+        *[!0-9a-fA-F:.]*) return 0 ;;
+        *.*|*:*) ;;
+        *) return 0 ;;
+    esac
+
+    [ "$expected" = "$observed" ] && return 0
+
+    # IPv6 only: Google echoes the fully expanded form (2a10:483:201:0:0:0:0:1000)
+    # while the config carries the compressed one, so a plain string compare would
+    # flag every v6 address in the pool. Normalise before deciding, and stay
+    # silent when python3 is missing rather than emit a false positive.
+    if [[ "$expected" == *:* || "$observed" == *:* ]]; then
+        command -v python3 >/dev/null 2>&1 || return 0
+        python3 -c 'import ipaddress, sys
+try:
+    sys.exit(0 if ipaddress.ip_address(sys.argv[1]) == ipaddress.ip_address(sys.argv[2]) else 1)
+except ValueError:
+    sys.exit(0)' "$expected" "$observed" && return 0
+    fi
+
+    _sentinel_net_log "WARN " "EGRESS_MISMATCH bound ${expected}, Google observed ${observed}"
+    sentinel_event "$expected" "egress" "MISMATCH" "obs=${observed}"
 }
