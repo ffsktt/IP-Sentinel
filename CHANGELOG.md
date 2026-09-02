@@ -1,5 +1,20 @@
 # Changelog
 
+## [fork]
+
+### ✨ Features
+- **Multi-IP pool support** — single Agent can maintain hundreds of IPs via round-robin batch dispatch
+- **Network namespace integration** — systemd units auto-prefixed with `ip netns exec` when `NETNS_NAME` is set
+- **CIDR filtering** — `IP_POOL_FILTER` selects which IPs from a netns interface to include in the maintenance pool
+- **Concurrent dispatch** — configurable `IP_BATCH_SIZE` and `IP_CONCURRENCY` with per-IP isolated config and cookie/persona separation
+- **Config-driven REPO_RAW_URL** — runtime scripts read OTA source from config.conf, supporting fork redirection without per-file edits
+- **Data/code URL separation** — `DATA_RAW_URL` (upstream) for keywords/UA/region data, `REPO_RAW_URL` (fork) for code OTA, eliminating data commit conflicts on rebase
+
+### 🔧 Changes
+- `CONFIG_FILE` in all modules changed from hardcoded to `${CONFIG_FILE:-default}` for per-IP override support
+- New file: `core/ip_pool.sh` — IP enumeration, CIDR filtering, batch selection, concurrent dispatch
+- All REPO_RAW_URL references redirected to `ffsktt/IP-Sentinel`
+
 ## [v4.3.4] - 2026-08-26
 
 ### ✨ Features

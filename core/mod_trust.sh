@@ -6,9 +6,10 @@
 # ==========================================================
 
 INSTALL_DIR="/opt/ip_sentinel"
-CONFIG_FILE="${INSTALL_DIR}/config.conf"
+CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.conf}"
 UA_FILE="${INSTALL_DIR}/data/user_agents.txt"
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
+DATA_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
 
 # --- [基础环境校验] ---
 [ ! -f "$CONFIG_FILE" ] && exit 1
@@ -27,7 +28,7 @@ REGION_JSON_FILE=$(find "${INSTALL_DIR}/data/regions" -name "*.json" 2>/dev/null
 if [ -z "$REGION_JSON_FILE" ] || [ ! -f "$REGION_JSON_FILE" ]; then
     REGION_JSON_FILE="${INSTALL_DIR}/data/regions/${REGION}.json"
     mkdir -p "${INSTALL_DIR}/data/regions"
-    curl -${IP_PREF:-4} -sL "${REPO_RAW_URL}/data/regions/${REGION}.json" -o "$REGION_JSON_FILE"
+    curl -${IP_PREF:-4} -sL "${DATA_RAW_URL}/data/regions/${REGION}.json" -o "$REGION_JSON_FILE"
 fi
 
 # 解析安全网址数组

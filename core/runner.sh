@@ -63,6 +63,19 @@ fi
 # ==========================================================
 log "SYSTEM" "INFO" "休眠结束，开始计算本轮任务轮盘..."
 
+# Multi-IP pool dispatch
+if [[ -z "$MULTI_IP_MODE" ]] && [[ -n "$NETNS_NAME" ]]; then
+    MULTI_IP_MODE="netns"
+fi
+if [[ -n "$MULTI_IP_MODE" ]] && [[ -f "${INSTALL_DIR}/core/ip_pool.sh" ]]; then
+    source "${INSTALL_DIR}/core/ip_pool.sh"
+    if _ip_pool_dispatch; then
+        log "SYSTEM" "INFO" "本轮所有模块调度完毕，哨兵继续隐蔽待命。"
+        exit 0
+    fi
+    log "POOL" "WARN" "Multi-IP dispatch failed, falling back to single-IP mode"
+fi
+
 TARGET_MOD=""
 MOD_NAME=""
 

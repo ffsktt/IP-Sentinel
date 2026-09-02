@@ -145,6 +145,35 @@ do_assemble_fallback() {
             fi
             echo -e "✅ 已锁定节点展示别名: \033[32m$NODE_ALIAS\033[0m"
         fi
+
+        echo -e "\n\033[36m[4.9/7] 网络命名空间 (netns) 配置...\033[0m"
+        read -p "是否在 netns 中运行？(y/n, 默认n): " NETNS_CHOICE
+        if [[ "$NETNS_CHOICE" =~ ^[Yy]$ ]]; then
+            MULTI_IP_MODE="netns"
+            read -p "请输入 netns 名称: " NETNS_NAME
+            if [ -z "$NETNS_NAME" ]; then
+                echo -e "\033[31m❌ netns 名称不能为空，已跳过 netns 配置。\033[0m"
+                MULTI_IP_MODE=""
+                NETNS_NAME=""
+            else
+                read -p "请输入 netns 内的接口名 (默认 veth0): " NETNS_IFACE
+                NETNS_IFACE="${NETNS_IFACE:-veth0}"
+                read -p "请输入 CIDR 过滤规则 (可选, 如 198.51.100.0/24, 回车跳过): " IP_POOL_FILTER
+                IP_POOL_FILTER="${IP_POOL_FILTER:-}"
+                IP_BATCH_SIZE="5"
+                IP_CONCURRENCY="3"
+                echo -e "\033[32m✅ netns 配置完成: ns=${NETNS_NAME}, iface=${NETNS_IFACE}\033[0m"
+                SAFE_COMM_IP="$SAFE_PUBLIC_IP"
+                BIND_IP="$SAFE_PUBLIC_IP"
+            fi
+        else
+            MULTI_IP_MODE=""
+            NETNS_NAME=""
+            NETNS_IFACE=""
+            IP_POOL_FILTER=""
+            IP_BATCH_SIZE="5"
+            IP_CONCURRENCY="3"
+        fi
     fi
 }
 
@@ -195,6 +224,20 @@ NODE_NAME="$NODE_NAME"
 NODE_ALIAS="$NODE_ALIAS"
 
 ENABLE_OTA="$ENABLE_OTA"
+
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
+DATA_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+FORK_TAG="ffsktt"
+
+# Multi-IP Pool
+MULTI_IP_MODE="$MULTI_IP_MODE"
+NETNS_NAME="$NETNS_NAME"
+NETNS_IFACE="$NETNS_IFACE"
+IP_POOL=""
+IP_POOL_PROTO=""
+IP_POOL_FILTER="$IP_POOL_FILTER"
+IP_BATCH_SIZE="${IP_BATCH_SIZE:-5}"
+IP_CONCURRENCY="${IP_CONCURRENCY:-3}"
 EOF
 
         chmod 600 "$CONFIG_FILE"
@@ -235,8 +278,18 @@ do_smooth_migrate() {
         fi
 
         # [v4.2.2 热修复] 为所有老节点 (无论是否已有残缺的 COMM_IP) 强行重铸多宿主容灾弹匣
+        # 当 NETNS_NAME 已配置时，host 上探测的 IP 与 netns 内不同，从 PUBLIC_IP 重建
+        if [[ -n "$NETNS_NAME" ]]; then
+            NEW_COMM_IP="$SAFE_PUBLIC_IP"
+            sed -i '/^COMM_IP=/d' "$CONFIG_FILE"
+            echo "COMM_IP=\"$NEW_COMM_IP\"" >> "$CONFIG_FILE"
+            sed -i "s|^BIND_IP=.*|BIND_IP=\"${SAFE_PUBLIC_IP}\"|" "$CONFIG_FILE"
+            BIND_IP="$SAFE_PUBLIC_IP"
+            SAFE_COMM_IP="$NEW_COMM_IP"
+            echo -e "\n🔄 [平滑迁移] netns 模式，BIND_IP/COMM_IP 同步至 PUBLIC_IP: $SAFE_COMM_IP"
+        else
         echo -e "\n🔄 [平滑迁移] 正在对老节点执行 v4.2.2 全域容灾弹匣重构..."
-        
+
         RAW_V4=$(curl -4 -s -m 3 api.ip.sb/ip 2>/dev/null | tr -d '[:space:]')
         RAW_V6=$(curl -6 -s -m 3 api.ip.sb/ip 2>/dev/null | tr -d '[:space:]')
         
@@ -273,6 +326,7 @@ do_smooth_migrate() {
         SAFE_COMM_IP="$NEW_COMM_IP"
         
         echo -e " \033[32m✅ 重铸容灾通讯专线完成: $SAFE_COMM_IP\033[0m"
+        fi
 
         if ! grep -q "^NODE_NAME=" "$CONFIG_FILE"; then
             TMP_HASH=$(echo "${SAFE_PUBLIC_IP:-127.0.0.1}" | md5sum | cut -c 1-4 | tr 'a-z' 'A-Z')
@@ -294,6 +348,29 @@ do_smooth_migrate() {
             ENABLE_OTA="false"
         else
             ENABLE_OTA=$(grep "^ENABLE_OTA=" "$CONFIG_FILE" | cut -d'"' -f2)
+        fi
+
+        # Multi-IP / netns fields backfill
+        if ! grep -q "^MULTI_IP_MODE=" "$CONFIG_FILE"; then
+            cat >> "$CONFIG_FILE" << 'MIPEOF'
+
+# Multi-IP Pool
+MULTI_IP_MODE=""
+NETNS_NAME=""
+NETNS_IFACE=""
+IP_POOL=""
+IP_POOL_PROTO=""
+IP_POOL_FILTER=""
+IP_BATCH_SIZE="5"
+IP_CONCURRENCY="3"
+MIPEOF
+            echo -e " \033[33m⚠️ [平滑迁移] 已追加 Multi-IP 配置字段 (默认禁用)\033[0m"
+        fi
+
+        if ! grep -q "^REPO_RAW_URL=" "$CONFIG_FILE"; then
+            echo "REPO_RAW_URL=\"https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main\"" >> "$CONFIG_FILE"
+            echo "DATA_RAW_URL=\"https://raw.githubusercontent.com/hotyue/IP-Sentinel/main\"" >> "$CONFIG_FILE"
+            echo "FORK_TAG=\"ffsktt\"" >> "$CONFIG_FILE"
         fi
     fi
 }

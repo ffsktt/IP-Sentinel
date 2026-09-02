@@ -448,11 +448,22 @@ do_final_report() {
                 
             else
                 echo -e "\n📡 [路由枢纽] 正在执行静默平滑升级 (v${OLD_VERSION} -> v${TARGET_VERSION})..."
-                TEXT_MSG="✨ *IP-Sentinel 引擎热更新完成！*
+                if [[ -n "$NETNS_NAME" ]]; then
+                    TEXT_MSG="✨ *IP-Sentinel 引擎热更新完成！*
+📍 节点：\`${NODE_ALIAS}\`
+🌐 养护 IP：\`${SAFE_PUBLIC_IP}\`
+📡 容灾 IP：\`${SAFE_COMM_IP}\`
+🚀 状态：v${TARGET_VERSION} (netns: ${NETNS_NAME})
+
+⚠️ *通讯地址已变更，请转发以下指令给机器人以同步司令部：*
+\`${REG_MSG}\`"
+                else
+                    TEXT_MSG="✨ *IP-Sentinel 引擎热更新完成！*
 📍 节点：\`${NODE_ALIAS}\`
 🌐 养护 IP：\`${SAFE_PUBLIC_IP}\`
 📡 容灾 IP：\`${SAFE_COMM_IP}\`
 🚀 状态：v${TARGET_VERSION} OTA 动态活体引擎已部署"
+                fi
 
                 JSON_PAYLOAD=$(jq -n --arg cid "$CHAT_ID" --arg txt "$TEXT_MSG" --arg cb "manage:${NODE_NAME}" '{chat_id: $cid, text: $txt, parse_mode: "Markdown", reply_markup: {inline_keyboard: [[{text: "⚙️ 调出该节点控制台", callback_data: $cb}]]}}')
                 curl -s -X POST "${TG_API_URL}" -H "Content-Type: application/json" -d "$JSON_PAYLOAD" >/dev/null 2>&1

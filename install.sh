@@ -21,7 +21,7 @@ cleanup_and_exit() {
 trap cleanup_and_exit INT QUIT TERM
 trap 'rm -rf "$SECURE_TMP" 2>/dev/null' EXIT HUP
 
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
 
 # ----------------------------------------------------------
 # [核心架构升级] 动态嗅探云端真理之源 (SSOT)

@@ -61,7 +61,7 @@ fi
 echo -e "======================================\n"
 sleep 1
 
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
 INSTALL_DIR="/opt/ip_sentinel"
 CONFIG_FILE="${INSTALL_DIR}/config.conf"
 
@@ -680,6 +680,35 @@ if [ "$UPGRADE_MODE" == "false" ]; then
         echo -e "✅ 已锁定节点展示别名: \033[32m$NODE_ALIAS\033[0m"
     fi
 
+    echo -e "\n\033[36m[4.9/7] 网络命名空间 (netns) 配置...\033[0m"
+    read -p "是否在 netns 中运行？(y/n, 默认n): " NETNS_CHOICE
+    if [[ "$NETNS_CHOICE" =~ ^[Yy]$ ]]; then
+        MULTI_IP_MODE="netns"
+        read -p "请输入 netns 名称: " NETNS_NAME
+        if [ -z "$NETNS_NAME" ]; then
+            echo -e "\033[31m❌ netns 名称不能为空，已跳过 netns 配置。\033[0m"
+            MULTI_IP_MODE=""
+            NETNS_NAME=""
+        else
+            read -p "请输入 netns 内的接口名 (默认 veth0): " NETNS_IFACE
+            NETNS_IFACE="${NETNS_IFACE:-veth0}"
+            read -p "请输入 CIDR 过滤规则 (可选, 如 198.51.100.0/24, 回车跳过): " IP_POOL_FILTER
+            IP_POOL_FILTER="${IP_POOL_FILTER:-}"
+            IP_BATCH_SIZE="5"
+            IP_CONCURRENCY="3"
+            echo -e "\033[32m✅ netns 配置完成: ns=${NETNS_NAME}, iface=${NETNS_IFACE}\033[0m"
+            SAFE_COMM_IP="$SAFE_PUBLIC_IP"
+            BIND_IP="$SAFE_PUBLIC_IP"
+        fi
+    else
+        MULTI_IP_MODE=""
+        NETNS_NAME=""
+        NETNS_IFACE=""
+        IP_POOL_FILTER=""
+        IP_BATCH_SIZE="5"
+        IP_CONCURRENCY="3"
+    fi
+
     # 5. 远程拉取冷数据并解析固化
     echo -e "\n[5/7] 正在从云端数据仓库拉取 [${CITY_NAME}] 节点的底层规则..."
     REGION_JSON_FILE="${INSTALL_DIR}/data/regions/${COUNTRY_ID}/${STATE_ID}/${CITY_ID}.json"
@@ -726,6 +755,20 @@ NODE_NAME="$NODE_NAME"
 NODE_ALIAS="$NODE_ALIAS"
 
 ENABLE_OTA="$ENABLE_OTA"
+
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
+DATA_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+FORK_TAG="ffsktt"
+
+# Multi-IP Pool
+MULTI_IP_MODE="$MULTI_IP_MODE"
+NETNS_NAME="$NETNS_NAME"
+NETNS_IFACE="$NETNS_IFACE"
+IP_POOL=""
+IP_POOL_PROTO=""
+IP_POOL_FILTER="$IP_POOL_FILTER"
+IP_BATCH_SIZE="${IP_BATCH_SIZE:-5}"
+IP_CONCURRENCY="${IP_CONCURRENCY:-3}"
 EOF
 
     chmod 600 "$CONFIG_FILE"
@@ -768,8 +811,18 @@ if [ "$UPGRADE_MODE" == "true" ]; then
     fi
 
     # [v4.2.2 热修复] 为所有老节点 (无论是否已有残缺的 COMM_IP) 强行重铸多宿主容灾弹匣
+    # 当 NETNS_NAME 已配置时，host 上探测的 IP 与 netns 内不同，从 PUBLIC_IP 重建
+    if [[ -n "$NETNS_NAME" ]]; then
+        NEW_COMM_IP="$SAFE_PUBLIC_IP"
+        sed -i '/^COMM_IP=/d' "$CONFIG_FILE"
+        echo "COMM_IP=\"$NEW_COMM_IP\"" >> "$CONFIG_FILE"
+        sed -i "s|^BIND_IP=.*|BIND_IP=\"${SAFE_PUBLIC_IP}\"|" "$CONFIG_FILE"
+        BIND_IP="$SAFE_PUBLIC_IP"
+        SAFE_COMM_IP="$NEW_COMM_IP"
+        echo -e "\n🔄 [平滑迁移] netns 模式，BIND_IP/COMM_IP 同步至 PUBLIC_IP: $SAFE_COMM_IP"
+    else
     echo -e "\n🔄 [平滑迁移] 正在对老节点执行 v4.2.2 全域容灾弹匣重构..."
-    
+
     RAW_V4=$(curl -4 -s -m 3 api.ip.sb/ip 2>/dev/null | tr -d '[:space:]')
     RAW_V6=$(curl -6 -s -m 3 api.ip.sb/ip 2>/dev/null | tr -d '[:space:]')
     
@@ -806,6 +859,7 @@ if [ "$UPGRADE_MODE" == "true" ]; then
     SAFE_COMM_IP="$NEW_COMM_IP"
     
     echo -e " \033[32m✅ 重铸容灾通讯专线完成: $SAFE_COMM_IP\033[0m"
+    fi
 
     if ! grep -q "^NODE_NAME=" "$CONFIG_FILE"; then
         TMP_HASH=$(echo "${SAFE_PUBLIC_IP:-127.0.0.1}" | md5sum | cut -c 1-4 | tr 'a-z' 'A-Z')
@@ -828,6 +882,28 @@ if [ "$UPGRADE_MODE" == "true" ]; then
     else
         ENABLE_OTA=$(grep "^ENABLE_OTA=" "$CONFIG_FILE" | cut -d'"' -f2)
     fi
+
+    # Multi-IP / netns fields backfill
+    if ! grep -q "^MULTI_IP_MODE=" "$CONFIG_FILE"; then
+        cat >> "$CONFIG_FILE" << 'MIPEOF'
+
+# Multi-IP Pool
+MULTI_IP_MODE=""
+NETNS_NAME=""
+NETNS_IFACE=""
+IP_POOL=""
+IP_POOL_PROTO=""
+IP_POOL_FILTER=""
+IP_BATCH_SIZE="5"
+IP_CONCURRENCY="3"
+MIPEOF
+    fi
+
+    if ! grep -q "^REPO_RAW_URL=" "$CONFIG_FILE"; then
+        echo "REPO_RAW_URL=\"https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main\"" >> "$CONFIG_FILE"
+        echo "DATA_RAW_URL=\"https://raw.githubusercontent.com/hotyue/IP-Sentinel/main\"" >> "$CONFIG_FILE"
+        echo "FORK_TAG=\"ffsktt\"" >> "$CONFIG_FILE"
+    fi
 fi
 
 # ==========================================================
@@ -848,6 +924,7 @@ curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/uninstall.sh" -o
 curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_google.sh" -o "${TMP_CORE}/mod_google.sh"
 curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_trust.sh" -o "${TMP_CORE}/mod_trust.sh"
 curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_quality.sh" -o "${TMP_CORE}/mod_quality.sh"
+curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/ip_pool.sh" -o "${TMP_CORE}/ip_pool.sh" 2>/dev/null || true
 
 # 🛡️ 终极自检墙：一旦任意文件缺失或长度为零，直接熔断放弃覆写，确保宿主不宕机
 if [ ! -s "${TMP_CORE}/runner.sh" ] || [ ! -s "${TMP_CORE}/agent_daemon.sh" ]; then
@@ -890,9 +967,15 @@ DEPLOY_UTC_MIN=$(date -u +%M)
 
 echo $(date -u +%s) > "${INSTALL_DIR}/core/.ua_last_update"
 
+NETNS_EXEC=""
+if [[ -n "$NETNS_NAME" ]]; then
+    local_ip_bin=$(command -v ip 2>/dev/null || echo "/usr/sbin/ip")
+    NETNS_EXEC="${local_ip_bin} netns exec ${NETNS_NAME} "
+fi
+
 if is_systemd; then
     echo "💡 检测到 Systemd 环境，正在部署原生守护服务..."
-    
+
     cat > /etc/systemd/system/ip-sentinel-runner.service << EOF
 [Unit]
 Description=IP-Sentinel Runner Service
@@ -901,7 +984,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/runner.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/runner.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -927,7 +1010,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/updater.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/updater.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -956,7 +1039,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/tg_report.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/tg_report.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -980,7 +1063,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=simple
-ExecStart=/bin/bash ${INSTALL_DIR}/core/agent_daemon.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/agent_daemon.sh
 Restart=always
 RestartSec=5
 User=root
@@ -1024,16 +1107,16 @@ while true; do
     MIN=\$(date -u +%M)
     HOUR=\$(date -u +%H)
     if [ "\$MIN" == "00" ] || [ "\$MIN" == "20" ] || [ "\$MIN" == "40" ]; then
-        /bin/bash /opt/ip_sentinel/core/runner.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/runner.sh >/dev/null 2>&1
     fi
     if [ "\$HOUR" == "${DEPLOY_UTC_HOUR}" ] && [ "\$MIN" == "${DEPLOY_UTC_MIN}" ]; then
-        /bin/bash /opt/ip_sentinel/core/updater.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/updater.sh >/dev/null 2>&1
     fi
     if [ "\$HOUR" == "16" ] && [ "\$MIN" == "00" ]; then
-        /bin/bash /opt/ip_sentinel/core/tg_report.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/tg_report.sh >/dev/null 2>&1
     fi
     if ! pgrep -f 'webhook.py' >/dev/null; then
-        /bin/bash /opt/ip_sentinel/core/agent_daemon.sh >/dev/null 2>&1 &
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/agent_daemon.sh >/dev/null 2>&1 &
     fi
     sleep 60
 done
@@ -1053,11 +1136,11 @@ EOF
             
         else
             crontab -l 2>/dev/null | grep -v "ip_sentinel" > "${SECURE_TMP}/cron_backup" || true
-            echo "*/20 * * * * ${INSTALL_DIR}/core/runner.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
-            echo "${DEPLOY_UTC_MIN} ${DEPLOY_UTC_HOUR} * * * ${INSTALL_DIR}/core/updater.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
-            
+            echo "*/20 * * * * ${NETNS_EXEC}${INSTALL_DIR}/core/runner.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+            echo "${DEPLOY_UTC_MIN} ${DEPLOY_UTC_HOUR} * * * ${NETNS_EXEC}${INSTALL_DIR}/core/updater.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+
             if [[ -n "$TG_TOKEN" ]] && [[ -n "$CHAT_ID" ]]; then
-                echo "0 16 * * * ${INSTALL_DIR}/core/tg_report.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+                echo "0 16 * * * ${NETNS_EXEC}${INSTALL_DIR}/core/tg_report.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
                 echo "$SAFE_PUBLIC_IP" > "${INSTALL_DIR}/core/.last_ip"
                 DAEMON_IP=$( (curl -s -m 5 api.ip.sb/ip || curl -s -m 5 ifconfig.me) 2>/dev/null | tr -d '[:space:]' )
                 [ -n "$DAEMON_IP" ] && echo "$DAEMON_IP" > "${INSTALL_DIR}/core/.last_ip" || echo "$(echo "$SAFE_PUBLIC_IP" | tr -d '[]')" > "${INSTALL_DIR}/core/.last_ip"

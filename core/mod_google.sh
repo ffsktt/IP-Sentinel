@@ -6,7 +6,7 @@
 # ==========================================================
 
 MODULE_NAME="Google"
-CONFIG_FILE="/opt/ip_sentinel/config.conf"
+CONFIG_FILE="${CONFIG_FILE:-/opt/ip_sentinel/config.conf}"
 
 # --- [环境预载] ---
 if [ -f "$CONFIG_FILE" ]; then

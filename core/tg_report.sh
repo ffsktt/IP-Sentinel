@@ -6,7 +6,7 @@
 # ==========================================================
 
 INSTALL_DIR="/opt/ip_sentinel"
-CONFIG_FILE="${INSTALL_DIR}/config.conf"
+CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.conf}"
 LOG_FILE="${INSTALL_DIR}/logs/sentinel.log"
 
 # --- [基础自检] ---
@@ -194,11 +194,16 @@ fi
 # 3. 云端版本探针与 OTA 调度模块
 # ==========================================================
 LOCAL_VER="${AGENT_VERSION:-未知}"
+LOCAL_FORK="${FORK_TAG:-}"
+FORK_LABEL=""
+[ -n "$LOCAL_FORK" ] && FORK_LABEL="-${LOCAL_FORK}"
 # [时间线对齐] 强制采用绝对 UTC 时间消除多节点的系统偏差
 REPORT_UTC_TIME=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
-REMOTE_VER=$(curl -s -m 3 "${REPO_RAW_URL}/version.txt" | grep "^AGENT_VERSION=" | cut -d'=' -f2 | tr -d '[:space:]')
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main}"
+_VER_TXT=$(curl -s -m 3 "${REPO_RAW_URL}/version.txt")
+REMOTE_VER=$(echo "$_VER_TXT" | grep "^AGENT_VERSION=" | cut -d'=' -f2 | tr -d '[:space:]')
+REMOTE_FORK=$(echo "$_VER_TXT" | grep "^FORK_TAG=" | cut -d'=' -f2 | tr -d '[:space:]')
 
 MSG="$MSG
 ----------------------------
@@ -207,14 +212,16 @@ MSG="$MSG
 
 # 根据云端版本一致性自动渲染更新提示面板
 if [ -n "$REMOTE_VER" ]; then
-    if [ "$REMOTE_VER" != "$LOCAL_VER" ]; then
+    if [ "$REMOTE_VER" != "$LOCAL_VER" ] || [ "$REMOTE_FORK" != "$LOCAL_FORK" ]; then
+        REMOTE_FORK_LABEL=""
+        [ -n "$REMOTE_FORK" ] && REMOTE_FORK_LABEL="-${REMOTE_FORK}"
         MSG="$MSG
-当前运行版本: \`v${LOCAL_VER}\`
-✨ **发现新版本**: \`v${REMOTE_VER}\` (建议更新)
+当前运行版本: \`v${LOCAL_VER}${FORK_LABEL}\`
+✨ **发现新版本**: \`v${REMOTE_VER}${REMOTE_FORK_LABEL}\` (建议更新)
 💡 *系统提示：检测到新版引擎，建议通过中枢控制台执行 OTA 热更新！*"
     else
         MSG="$MSG
-当前运行版本: \`v${LOCAL_VER}\` (✅已是最新)
+当前运行版本: \`v${LOCAL_VER}${FORK_LABEL}\` (✅已是最新)
 💡 *IP-Sentinel 持续为您守护节点。*
 *若本项目对您有帮助，欢迎前往 GitHub 赐予 🌟*"
     fi

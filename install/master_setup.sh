@@ -168,6 +168,7 @@ DB_FILE="$DB_FILE"
 MASTER_DIR="$MASTER_DIR"
 IS_OFFICIAL_GATEWAY="$IS_OFFICIAL_GATEWAY"
 ENABLE_MASTER_OTA="$ENABLE_MASTER_OTA"
+FORK_TAG="ffsktt"
 EOF
     fi
 
@@ -183,6 +184,10 @@ EOF
             MASTER_HASH=$(echo "${MASTER_IP:-127.0.0.1}" | md5sum | cut -c 1-4 | tr 'a-z' 'A-Z')
             MASTER_NODE_NAME="$(hostname | tr -cd 'a-zA-Z0-9' | cut -c 1-10)-${MASTER_HASH}"
             echo "MASTER_NODE_NAME=\"$MASTER_NODE_NAME\"" >> "${MASTER_DIR}/master.conf"
+        fi
+        if ! grep -q "^FORK_TAG=" "${MASTER_DIR}/master.conf"; then
+            REMOTE_FORK_TAG=$(curl -s -m 3 "${REPO_RAW_URL}/version.txt" | grep "^FORK_TAG=" | cut -d'=' -f2 | tr -d '[:space:]')
+            [ -n "$REMOTE_FORK_TAG" ] && echo "FORK_TAG=\"$REMOTE_FORK_TAG\"" >> "${MASTER_DIR}/master.conf"
         fi
     fi
 }

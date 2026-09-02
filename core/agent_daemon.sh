@@ -6,7 +6,7 @@
 # ==========================================================
 
 INSTALL_DIR="/opt/ip_sentinel"
-CONFIG_FILE="${INSTALL_DIR}/config.conf"
+CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.conf}"
 IP_CACHE="${INSTALL_DIR}/core/.last_ip"
 
 [ ! -f "$CONFIG_FILE" ] && exit 1
@@ -451,7 +451,7 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 # [防线/容灾] 逃逸 Cgroup 隔离沙盒，并引入前置脚本语法校验防砖
                 import shutil
                 import base64
-                repo_url = "https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+                repo_url = "https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
                 if os.path.exists('/opt/ip_sentinel/core/install.sh'):
                     with open('/opt/ip_sentinel/core/install.sh', 'r') as f:
                         for line in f:

@@ -4,7 +4,57 @@
 # 核心功能: 动态路由寻路、第三方 API 容灾获取、流媒体解锁链路剖析
 # ==========================================================
 
-source /opt/ip_sentinel/config.conf
+source "${CONFIG_FILE:-/opt/ip_sentinel/config.conf}"
+
+# ==========================================================
+# 0. Multi-IP pool: pick a random IP for this probe session
+# ==========================================================
+if [[ -n "$MULTI_IP_MODE" ]] || [[ -n "$NETNS_NAME" ]]; then
+    _QUALITY_POOL=()
+    _QP_IFACE="${NETNS_IFACE:-veth0}"
+    if ! ip link show "$_QP_IFACE" >/dev/null 2>&1; then
+        _QP_IFACE=$(ip -o link show up 2>/dev/null | awk -F'[ :]+' '$2 != "lo" {print $2; exit}')
+    fi
+    if [[ -n "$_QP_IFACE" ]]; then
+        _QP_PROTO="${IP_POOL_PROTO}"
+        if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"4"* ]]; then
+            while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
+                ip -4 addr show dev "$_QP_IFACE" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}')
+        fi
+        if [[ -z "$_QP_PROTO" || "$_QP_PROTO" == *"6"* ]]; then
+            while IFS= read -r _a; do [[ -n "$_a" ]] && _QUALITY_POOL+=("$_a"); done < <(
+                ip -6 addr show dev "$_QP_IFACE" scope global 2>/dev/null | awk '/inet6 /{split($2,a,"/"); print a[1]}')
+        fi
+        if [[ -n "$IP_POOL_FILTER" ]] && [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
+            _QP_FILTERED=()
+            while IFS= read -r _a; do [[ -n "$_a" ]] && _QP_FILTERED+=("$_a"); done < <(
+                printf '%s\n' "${_QUALITY_POOL[@]}" | python3 -c "
+import ipaddress, sys
+nets = [ipaddress.ip_network(c.strip(), strict=False) for c in sys.argv[1].split(',') if c.strip()]
+for line in sys.stdin:
+    s = line.strip()
+    if not s: continue
+    try:
+        if any(ipaddress.ip_address(s) in n for n in nets): print(s)
+    except ValueError: pass
+" "$IP_POOL_FILTER")
+            _QUALITY_POOL=("${_QP_FILTERED[@]}")
+        fi
+        if [ ${#_QUALITY_POOL[@]} -gt 0 ]; then
+            _QP_IDX=$((RANDOM % ${#_QUALITY_POOL[@]}))
+            _QP_SELECTED="${_QUALITY_POOL[$_QP_IDX]}"
+            if [[ "$_QP_SELECTED" == *":"* ]]; then
+                PUBLIC_IP="[${_QP_SELECTED}]"
+                BIND_IP="[${_QP_SELECTED}]"
+                IP_PREF="6"
+            else
+                PUBLIC_IP="$_QP_SELECTED"
+                BIND_IP="$_QP_SELECTED"
+                IP_PREF="4"
+            fi
+        fi
+    fi
+fi
 
 # ==========================================================
 # 1. 动态网络锚定与协议自适应

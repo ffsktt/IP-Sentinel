@@ -1,157 +1,134 @@
-# 🛡️ IP-Sentinel (分布式 IP 哨兵集群)
+# 🛡️ IP-Sentinel (Fork — Multi-IP / netns)
 
-![Agent Installs](https://img.shields.io/endpoint?url=https://ip-sentinel-count.samanthaestime296.workers.dev/stats/agent)
-![Master Commands](https://img.shields.io/endpoint?url=https://ip-sentinel-count.samanthaestime296.workers.dev/stats/master)
-![License](https://img.shields.io/github/license/hotyue/IP-Sentinel)
+> Fork of [hotyue/IP-Sentinel](https://github.com/hotyue/IP-Sentinel) with multi-IP pool support and network namespace integration.
 
-> **一个极度轻量、零感知、支持中枢遥控的 VPS IP 自动化养护与区域纠偏引擎。**
-> **💡 提示：如果本项目提升了您的节点稳定性，请点击右上角点亮 🌟 Star！您的支持是我们持续研发和维护指纹库的核心动力。**
+本 fork 在上游基础上新增：
 
-📢 官方战术交流频道: 🛰️ [IP-Sentinel Matrix](https://t.me/IP_Sentinel_Matrix)
+- **Multi-IP 池化养护** — 单个 Agent 节点可同时轮转养护数百个 IP 地址
+- **Network Namespace 集成** — 支持在 Linux netns 内运行，服务通过 `ip netns exec` 执行
+- **CIDR 过滤** — 从 netns 接口地址中按前缀筛选需要养护的子集
+- **有限并发** — 可配置的批量大小和并发数，串行轮转，不会产生高并发
+- **代码/数据 URL 分离** — 代码 OTA 从本 fork 拉取，数据更新从上游拉取，rebase 零冲突
 
-专为解决 VPS IP 被 Google 等数据库错误定位到中国大陆/香港（俗称“送中”）等问题而生。IP-Sentinel 已从单机脚本全面跃升为 **Master-Agent 分布式架构**。它像影子一样潜伏在全球各地的服务器后台，通过高度拟真的真实用户行为为你默默积累 IP 权重，并允许你通过 Telegram 随时随地对整个舰队进行毫秒级“点名”与“遥控”。
+## 与上游的关系
 
-## ✨ 核心极客特性 (Core Architecture)
+| 内容 | 来源 |
+|------|------|
+| 代码 OTA (`REPO_RAW_URL`) | 本 fork (`ffsktt/IP-Sentinel`) |
+| 数据更新 (`DATA_RAW_URL`) | 上游 (`hotyue/IP-Sentinel`) |
+| 关键词/UA/区域规则 | 上游 GitHub Actions 每日生成 |
+| 第三方 IP 探针 | `xykt/IPQuality`（独立） |
 
-- 📊 **深海声呐全维探针 (Deep Sea Sonar)**：内嵌强效正则去污的 JSON 提取引擎，无损展现免掩码的真实 IP 情报。聚合 Scamalytics、AbuseIPDB 等五大权威防欺诈库，精准嗅探代理/VPN特征、25端口及流媒体原生解锁状态，并自带 Google “送中”高危预警与污染趋势图谱。
-- ⚡ **无损高并发引擎 (WAL Concurrency)**：司令部 SQLite 数据库全面激活 `WAL` (Write-Ahead Logging) 模式与毫秒级排队算法。即使对 500 台边缘节点发起全军总攻，也能完美规避 `database is locked` 与 Telegram `429` 拦截。
-- 🪶 **模块化极简部署 (Modular & Zero-Bloat)**：全栈剔除第三方依赖，基于 Python3 原生标准库运行。安装入口采用高内聚低耦合的引导层架构（Bootstrapper），配合 `bash -c` 纯净挂载，全面适配 Debian/Alpine/CentOS 等全系 Linux，杜绝管道流污染。
-- 🎛️ **扁平化指挥矩阵 (Flat Command Matrix)**：引入扁平化四级战区降维视图与双轨身份制。深度定制 Inline Keyboard 逃生舱交互，支持原位丝滑重绘 (In-place UI Edit) 与二次高危确认（Secondary Confirmation），实现毫秒级模块热启停与跨地域深海声呐投放。
-- 🔄 **全栈零信任 OTA 引擎 (Zero-Trust OTA Upgrade)**：首创双端物理熔断机制。长官可通过私有中枢，一键向全舰队下发静默热重载指令；更支持**「司令部金蝉脱壳」**，实现真正的全栈去 SSH 化运维。
-- 🛡️ **自动化防线操纵 (Autopilot Firewalls)**：安装与卸载阶段自动嗅探底层组件（UFW / Firewalld / iptables / ip6tables），实施双栈（IPv4 & IPv6）冗余通道的自动化放行与闭环抹杀，全程零敞露。
-- 🗺️ **全球拓扑矩阵与活体词库 (Global Nexus)**：接入 GitHub Actions 云端兵工厂，每日静默同步全球各大区真实热搜榜单与高权重本土站点，让伪装行为永远贴合当地网络脉搏。
-- 👻 **绝对时空对齐与高频错峰 (UTC-Seeded Scheduling)**：全栈强制接管底层时钟为**绝对 UTC 时间**。全舰队以 **20 分钟 (每日 72 次)** 的极高密度进行养护巡逻，叠加基于部署锚点的天然削峰与随机防并发休眠，完美化解十万级集群的“惊群效应”。
-- 🖧 **三级容灾架构与智能多宿主 (Multi-IP Fallback)**：底层引擎强力接管发包参数 (`--interface`) 并双重过滤 WARP/TUN 等假公网环境。创新引入三级阶梯脱壳与多宿主弹匣装填，彻底杜绝探针假死与流媒体失明误报。
+本 fork **不启用** GitHub Actions 的 scheduled workflows，避免产生数据 commit 导致 rebase 冲突。Agent 的 `updater.sh` 每日直接从上游拉取最新数据。
 
-**—— 💎 骨干基建特征 ——**
-- 🏭 **全自动云端军工厂 (CI/CD Data Factory)**：依托 GitHub Actions 构建双轨无人值守流水线。**每月 1 日**批量锻造 4000+ 带有绝对物理分区的原生终端指纹库；**每日凌晨 (UTC)** 实时抓取全球各战区 Google 真实热搜榜单与本土骨干新闻 RSS。为前线舰队源源不断地输送最鲜活的伪装弹药。
-- 🔒 **叹息之墙 (Zero-Trust HMAC)**：底层通讯引入 时间戳 + HMAC-SHA256 军用级动态签名。指令有效期仅 60 秒（阅后即焚），未授权请求直接触发系统级 403 物理熔断，彻底免疫中间人抓包与重放攻击。
-- ☁️ **云端中枢 (Public Master)**：官方公共机器人 [@OmniBeacon_bot](https://t.me/OmniBeacon_bot) ，新手免自建，一键接入极速入伍！同时支持硬核极客私有化 SQLite 分布式部署。
+同步上游：
 
-## 📂 项目架构 (Modular Monorepo)
-
-本项目已迈入 v4.3.0 现代工程时代，采用高内聚的模块化与“冷热数据分离”双重架构：
-
-```text
-📦 IP-Sentinel
- ┣ 📂 .github/workflows/      # 🏭 自动化兵工厂：每月定时触发指纹生成的 CI/CD 流水线
- ┣ 📂 install/                # 🧩 [v4.3.0] 安装期编排引擎：模块化解耦的环境判定、交互层与网络防线
- ┣ 📜 install.sh              # 🚀 Agent 引导程序：以防污染单行指令调用下层模块
- ┣ 📂 master/                 # 🧠 司令部：SQLite 存储、TG 监听与 Webhook 调度 (含专属引导程序)
- ┣ 📂 core/                   # 🛡️ 边缘哨兵：Webhook 守护进程、多维交叉探针与原子养护循环
- ┣ 📂 scripts/                # 🐍 兵工厂引擎：基于 Python 的多物理分区 UA 与热搜词生成器
- ┣ 📂 data/                   # 🗂️ 全球数据规则库 (动态拓扑)
- ┃  ┣ 📜 map.json             # 🌍 全球区域大脑 (战区拓扑引擎)
- ┃  ┣ 📂 regions/             # 🧊 冷数据：按 [国家/省州/城市] 深度细分的 LBS 锚点
- ┃  ┣ 📂 keywords/            # 🔥 热数据：按国家归类的动态搜索词库 (OTA 自动更新)
- ┃  ┗ 📜 user_agents.txt      # 🔥 热数据：由兵工厂每月锻造的绝对坐标专属设备库
- ┣ 📜 version.txt             # 🚩 双端版本信标：Agent/Master 独立解耦的 KV 环境配置
- ┗ 📂 telemetry/              # 👁️‍🗨️ 玻璃房计划：Cloudflare Workers 透明计数器网关源码
-```
-
-## 🚀 极速部署 (Quick Start)
-> 🛡️ **跨平台装甲支持**：Debian / Ubuntu / CentOS / RHEL / Alpine Linux / Arch Linux
-⚠️ 指令规范：全系统已升级为防污染内存加载。请严格复制下方完整指令，切勿使用 curl | bash 以防中断！
-系统现提供两种接入模式，请根据您的战术需求选择：
-
-### 🔹 模式 A：私有独立模式 (全自主、强烈推荐)
-适合追求绝对数据隐私与舰队最高控制权的领主。
-
-> ☢️ **核按钮系统已就绪**：采用私有部署，您将解锁 **OTA 远程静默升级** 权限！所有私有前线节点均可通过您的 TG 面板实现一键全网代码热重载换代！
-
-- **部署 Master (中枢大脑)**：找一台 VPS 作为司令部（仅需部署一台,可以与Agent装在同一台VPS），执行：
-- [官方部署教程](https://blog.iot-architect.com/engineering-practice/ip-sentinel-master-deployment-guide/)
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hotyue/IP-Sentinel/main/master/install_master.sh)"
+git remote add upstream https://github.com/hotyue/IP-Sentinel.git  # once
+git fetch upstream
+git rebase upstream/main
+# REPO_RAW_URL 行（~3 处）是唯一可能的冲突点，trivial resolve
 ```
-- 部署 Agent (边缘哨兵)：在需要养护的机器上执行 Agent 脚本，安装时选择私有独立中枢，并分别输入您自建机器人的 [Token](https://blog.iot-architect.com/engineering-practice/create-private-telegram-bot-via-botfather) 以及您的个人 [Chat ID](https://blog.iot-architect.com/engineering-practice/get-telegram-personal-id-via-userinfobot) ：
-- [官方部署教程](https://blog.iot-architect.com/engineering-practice/ip-sentinel-installation-and-upgrade-guide/)
-```Bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hotyue/IP-Sentinel/main/install.sh)"
+
+## 部署
+
+### 前置条件
+
+- 一台已部署 Master 的 VPS（或准备新装）
+- TG Bot Token + Chat ID
+- 目标 Edge 节点（VPS 或 netns 环境）
+
+### Master（控制中枢）
+
+**全新部署：**
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/master/install_master.sh)"
 ```
-- 激活节点：安装完成后，您的手机会收到一条 #REGISTER# 注册暗号，将其转发给您自己的机器人即可完成编队入库。
 
-### 🔸 模式 B：官方公共模式 (最简体验)
-适合不想折腾、只想快速体验养护效果的新兵。
+**从上游版本升级到 fork：**
 
-> ☢️ **核按钮系统已阉割**：采用官方BOT，您将失去 **OTA 远程静默升级** 权限！所有私有前线节点只能通过SSH登录进行更新换代！
+```bash
+# 1. 用 fork 的安装器覆盖（选"平滑升级"，保留数据库）
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/master/install_master.sh)"
 
-- 关注机器人：在 TG 中关注官方安全网关 [@OmniBeacon_bot](https://t.me/OmniBeacon_bot) 并发送 /start。
-
-- 部署 Agent：在目标 VPS 上执行以下指令，安装过程中选择官方公共网关，并输入您的 Chat ID：
-- [官方部署教程](https://blog.iot-architect.com/engineering-practice/deploy-ip-sentinel-official-gateway/)
-```Bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hotyue/IP-Sentinel/main/install.sh)"
+# 2. 追加 fork URL 到 master.conf，确保后续 OTA 和版本检查指向 fork
+echo 'REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"' >> /opt/ip_sentinel_master/master.conf
+systemctl restart ip-sentinel-master.service
 ```
-- 激活节点：同上，将收到的暗号转发给官方机器人即可。
 
-## 🆙 架构级无损热升级指引 (Upgrade Guide)
+### Edge 节点 — 普通 VPS（单 IP）
 
-### 📡 方式一：OTA 远程静默升级 (私有中枢专属)
-如果您是私有中枢领主，当司令部首页 (`/start`) 或每日战报提示发现新版本时：
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/install.sh)"
+```
 
-1. **升级 Master 司令部自身**：在司令部顶级菜单，点击最上方的 `[ 🆙 升级司令部至 vX.X.X ]`。中枢将释放幽灵进程静默重构，数秒后向您发送捷报。
-2. **升级全舰队 Agent**：在司令部顶级菜单，点击 `[ ☢️ 全舰队 OTA 热重载 ]`。
-3. **升级单节点 Agent**：进入 `🌍 全球战区雷达` -> 选择目标节点 -> 在统一终端面板点击 `[ 🆙 OTA 静默升级 ]`。
-*(⚠️ 节点收到指令后会在后台挂起静默拉取，全程无需登录 SSH，完成后将主动发回心跳确认！)*
+按菜单选择地区、填入 TG 配置即可。与上游用法一致。
 
-### 💻 方式二：SSH 终端平滑直装 (适用于官方网关或老旧节点)
-如果您的节点不支持 OTA，或者您的节点版本过于陈旧 (如 v3.3.1)：
+### Edge 节点 — netns 多 IP
 
-- 登录该节点的 SSH 终端，再次运行上面的 bash -c 官方单行安装指令。
+适用于基于 netns 的部署环境，一个 netns 内 veth 接口上绑定了多个公网 IP。
 
-- 安装引擎自带状态机嗅探逻辑，它会自动读取老旧数据，您只需一路回车，3 秒即可在本地完成配置继承、数据同步与新内核的无损覆盖热重载！
+在 host 上执行安装脚本：
 
-## 🗑️ 一键无痕卸载
-如果你需要清理某个边缘节点，只需重新运行 `core/install.sh` 并选择 **[2]**，或直接在节点终端执行：
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main/install.sh)"
+```
 
-```Bash
+安装过程中：
+1. 选择 IP 时选"手动指定其他 IP"，填入 netns 中的一个主 IP（作为节点身份和 Master 通讯锚点）
+2. 安装器会提示"是否在 netns 中运行"，选 `y` 后依次填入 netns 名称、接口名、CIDR 过滤规则
+3. 安装完成后 systemd unit 自动带 `ip netns exec` 前缀
+
+安装后如需修改参数（如 CIDR 过滤规则），直接编辑 `/opt/ip_sentinel/config.conf`。修改 `IP_POOL_FILTER` 等运行时参数**无需重启**（runner 每次执行重新读取 config）；修改 `NETNS_NAME` 需要重跑安装器升级模式以重建 systemd unit。
+
+配置项说明：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `MULTI_IP_MODE` | `""` (禁用), `"netns"` (从接口枚举), `"list"` (显式列表) | `""` |
+| `NETNS_NAME` | systemd unit 的 `ip netns exec` 参数 | `""` |
+| `NETNS_IFACE` | netns 模式下扫描的接口名 | `veth0` |
+| `IP_POOL` | list 模式的逗号分隔 IP 列表 | `""` |
+| `IP_POOL_PROTO` | 协议过滤: `"4"`, `"6"`, 或留空（双栈） | `""` |
+| `IP_POOL_FILTER` | CIDR include 过滤（逗号分隔前缀） | `""` |
+| `IP_BATCH_SIZE` | 每次 runner 调度处理的 IP 数 | `5` |
+| `IP_CONCURRENCY` | 并发养护槽位数 | `3` |
+
+**验证**：
+
+```bash
+# 确认 unit 带 netns 前缀
+grep ExecStart /etc/systemd/system/ip-sentinel-runner.service
+
+# 手动触发一次
+systemctl start ip-sentinel-runner.service
+journalctl -u ip-sentinel-runner.service -n 30
+
+# 检查轮转进度
+cat /opt/ip_sentinel/core/.ip_pool_cursor
+```
+
+## 日常维护
+
+| 操作 | 方法 |
+|------|------|
+| 修改 IP 池参数 | 编辑 `config.conf`，无需重启（runner 每次执行重新读取） |
+| 修改 `NETNS_NAME` | 编辑 `config.conf` 后需重跑安装器升级模式以重建 systemd unit |
+| 批量 OTA | Master TG 面板 → "全网节点 OTA 热重载" |
+| 单节点 OTA | Master TG 面板 → 选节点 → "OTA 静默升级" |
+
+## 卸载
+
+```bash
 bash /opt/ip_sentinel/core/uninstall.sh
-
 ```
 
-## 🧓 传家宝老旧系统专用通道 (Debian 9)
+## 上游文档
 
-如果你的小鸡系统版本过低（如 Debian 9），由于官方 APT 源已关闭且 Python 版本过旧，无法使用主线版本，请使用 **Legacy 兼容分支** 部署。
-*(注意：该分支仅作基础维护，不享受新功能迭代，请尽可能升级你的系统)*
+关于 Master-Agent 架构、模块功能、安全机制等详细说明，参见 [上游 README](https://github.com/hotyue/IP-Sentinel#readme)。
 
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/hotyue/IP-Sentinel/legacy/core/install.sh)
-```
+## 致谢
 
-## 📡 战术联络 (Community)
-
-如果你在使用过程中遇到任何疑难杂症，或者想围观大佬们的养护战报，欢迎加入我们的基地：
-- Telegram 频道: [@IP_Sentinel_Matrix](https://t.me/IP_Sentinel_Matrix)
-
-## 🤝 参与贡献 (Contributors)
-
-**🌟 感谢以下所有为 IP-Sentinel 添砖加瓦的指挥官们！** 你们的每一次 PR 都在让这艘战舰的全球雷达覆盖得更广。
-
-<a href="https://github.com/hotyue/IP-Sentinel/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=hotyue/IP-Sentinel" alt="Contributors" />
-</a>
-
-如果你想为项目增加新的节点区域（例如德国、英国、大洋洲等），或者提供更丰富的本土化搜索词库，非常欢迎提交 Pull Request！
-
-
-> - 感谢 @xykt 本项目IP质量检测采用[xykt/IPQuality](https://github.com/xykt/IPQuality) 脚本！
-
-**💡 全球节点贡献规范：**
-1. 在 `data/regions/国家代码/省州代码/` 目录下新增对应城市的配置 `.json`。
-2. 在 `data/keywords/` 目录下新增或完善配套国家的词库 `kw_XX.txt`。
-3. **最重要的一步：** 在 `data/map.json` 中登记你的国家、省州与城市信息。安装脚本将自动读取地图，在全球雷达中点亮你的节点！
-
-## ⚠️ 免责声明
-
-本项目仅供网络原理研究、个人 VPS 维护学习使用。请遵守当地法律法规及目标服务商的 TOS（服务条款），切勿用于恶意高频请求或任何非法用途。使用者需自行承担因不当使用造成的 IP 封禁或其他相关风险。
-
-## 保持联系
-
-[![Blog](https://img.shields.io/badge/Blog-个人博客-blue)](https://blog.iot-architect.com)
-
-如果你觉得这个项目对你有帮助，欢迎关注我的个人博客，我会定期分享技术教程。
-
-
-### 📈 Stargazers over time
-![Star History](https://raw.githubusercontent.com/hotyue/IP-Sentinel/main/data/star_history.svg?v=1)
+- [hotyue/IP-Sentinel](https://github.com/hotyue/IP-Sentinel) — 上游项目
+- [xykt/IPQuality](https://github.com/xykt/IPQuality) — IP 质量探测脚本

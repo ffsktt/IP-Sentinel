@@ -9,7 +9,7 @@ CONF="/opt/ip_sentinel_master/master.conf"
 [ ! -f "$CONF" ] && exit 1
 source "$CONF"
 
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main}"
 MASTER_VERSION=${MASTER_VERSION:-"3.5.0"}
 
 OFFSET_FILE="${MASTER_DIR}/.tg_offset"
@@ -386,25 +386,31 @@ while true; do
             # ----------------------------------------------------------
             case "$TEXT" in
                 "/start"|"/menu")
-                    # 👇 --- 新增这段逻辑：抹杀用户发送的 /start 文本指令 --- 👇
+                    # 抹杀用户发送的 /start 文本指令
                     if [ -n "$USER_MSG_ID" ] && [ -z "$CB_ID" ]; then
                         curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/deleteMessage" \
                             -d "chat_id=$CHAT_ID" -d "message_id=$USER_MSG_ID" > /dev/null
                     fi
-                    # 👆 ----------------------------------------------------- 👆
-                    
-                    REMOTE_VER=$(curl -s -m 2 "${REPO_RAW_URL}/version.txt" | grep "^MASTER_VERSION=" | cut -d'=' -f2 | tr -d '[:space:]')
-                    VER_INFO="当前版本: \`v${MASTER_VERSION}\`"
+
+                    _VER_TXT=$(curl -s -m 2 "${REPO_RAW_URL}/version.txt")
+                    REMOTE_VER=$(echo "$_VER_TXT" | grep "^MASTER_VERSION=" | cut -d'=' -f2 | tr -d '[:space:]')
+                    REMOTE_FORK=$(echo "$_VER_TXT" | grep "^FORK_TAG=" | cut -d'=' -f2 | tr -d '[:space:]')
+                    LOCAL_FORK="${FORK_TAG:-}"
+                    FORK_LABEL=""
+                    [ -n "$LOCAL_FORK" ] && FORK_LABEL="-${LOCAL_FORK}"
+                    VER_INFO="当前版本: \`v${MASTER_VERSION}${FORK_LABEL}\`"
                     
                     BTN_MASTER_OTA=""
                     if [ -n "$REMOTE_VER" ]; then
-                        if [ "$REMOTE_VER" != "$MASTER_VERSION" ]; then
-                            VER_INFO="${VER_INFO}\n✨ **发现新版本**: \`v${REMOTE_VER}\` (可执行中枢热重载)"
+                        if [ "$REMOTE_VER" != "$MASTER_VERSION" ] || [ "$REMOTE_FORK" != "$LOCAL_FORK" ]; then
+                            REMOTE_FORK_LABEL=""
+                            [ -n "$REMOTE_FORK" ] && REMOTE_FORK_LABEL="-${REMOTE_FORK}"
+                            VER_INFO="${VER_INFO}\n✨ **发现新版本**: \`v${REMOTE_VER}${REMOTE_FORK_LABEL}\` (可执行中枢热重载)"
                             if [ "$IS_OFFICIAL_GATEWAY" != "true" ] && [ "${ENABLE_MASTER_OTA:-false}" == "true" ]; then
                                 BTN_MASTER_OTA="[{\"text\":\"🆙 升级控制中枢至 v${REMOTE_VER}\",\"callback_data\":\"master_ota_confirm\"}],"
                             fi
                         else
-                            VER_INFO="当前版本: \`v${MASTER_VERSION}\` (✅已是最新)"
+                            VER_INFO="当前版本: \`v${MASTER_VERSION}${FORK_LABEL}\` (✅已是最新)"
                         fi
                     fi
 

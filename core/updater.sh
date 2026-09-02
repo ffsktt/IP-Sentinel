@@ -6,10 +6,11 @@
 # ==========================================================
 
 INSTALL_DIR="/opt/ip_sentinel"
-CONFIG_FILE="${INSTALL_DIR}/config.conf"
+CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.conf}"
 UA_TIME_FILE="${INSTALL_DIR}/core/.ua_last_update"
 
-REPO_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/ffsktt/IP-Sentinel/main"
+DATA_RAW_URL="https://raw.githubusercontent.com/hotyue/IP-Sentinel/main"
 
 # --- [底层数据链装载] ---
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -69,7 +70,7 @@ DIFF=$((NOW - LAST_UPDATE))
 
 if [ "$DIFF" -ge 2592000 ] || [ "$LAST_UPDATE" -eq 0 ]; then
     TMP_UA="/tmp/ip_sentinel_ua.txt"
-    $CURL_CMD "${REPO_RAW_URL}/data/user_agents.txt" -o "$TMP_UA"
+    $CURL_CMD "${DATA_RAW_URL}/data/user_agents.txt" -o "$TMP_UA"
     
     if [ -s "$TMP_UA" ]; then
         mv "$TMP_UA" "${INSTALL_DIR}/data/user_agents.txt"
@@ -88,7 +89,7 @@ fi
 # [态势感知热更] 动态注入本土高权热搜及战区 LBS 规则
 # ----------------------------------------------------------
 TMP_KW="/tmp/ip_sentinel_kw.txt"
-$CURL_CMD "${REPO_RAW_URL}/data/keywords/kw_${REGION_CODE}.txt" -o "$TMP_KW"
+$CURL_CMD "${DATA_RAW_URL}/data/keywords/kw_${REGION_CODE}.txt" -o "$TMP_KW"
 
 if [ -s "$TMP_KW" ]; then
     mv "$TMP_KW" "${INSTALL_DIR}/data/keywords/kw_${REGION_CODE}.txt"
@@ -104,7 +105,7 @@ if [ -n "$REGION_JSON_FILE" ] && [ -f "$REGION_JSON_FILE" ]; then
     REL_PATH=${REGION_JSON_FILE#*${INSTALL_DIR}/}
     TMP_JSON="/tmp/ip_sentinel_region.json"
     
-    $CURL_CMD "${REPO_RAW_URL}/${REL_PATH}" -o "$TMP_JSON"
+    $CURL_CMD "${DATA_RAW_URL}/${REL_PATH}" -o "$TMP_JSON"
     
     if [ -s "$TMP_JSON" ]; then
         mv "$TMP_JSON" "$REGION_JSON_FILE"

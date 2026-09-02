@@ -60,6 +60,7 @@ do_deploy_core() {
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_google.sh" -o "${TMP_CORE}/mod_google.sh"
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_trust.sh" -o "${TMP_CORE}/mod_trust.sh"
     curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/mod_quality.sh" -o "${TMP_CORE}/mod_quality.sh"
+    curl -fsSL --connect-timeout 10 --retry 3 "${REPO_RAW_URL}/core/ip_pool.sh" -o "${TMP_CORE}/ip_pool.sh" 2>/dev/null || true
 
     # 🛡️ 终极自检墙：一旦任意文件缺失或长度为零，直接熔断放弃覆写，确保宿主不宕机
     if [ ! -s "${TMP_CORE}/runner.sh" ] || [ ! -s "${TMP_CORE}/agent_daemon.sh" ]; then
@@ -104,9 +105,16 @@ do_inject_daemon() {
 
     echo $(date -u +%s) > "${INSTALL_DIR}/core/.ua_last_update"
 
+    NETNS_EXEC=""
+    if [[ -n "$NETNS_NAME" ]]; then
+        local ip_bin
+        ip_bin=$(command -v ip 2>/dev/null || echo "/usr/sbin/ip")
+        NETNS_EXEC="${ip_bin} netns exec ${NETNS_NAME} "
+    fi
+
     if is_systemd; then
         echo "💡 检测到 Systemd 环境，正在部署原生守护服务..."
-        
+
         cat > /etc/systemd/system/ip-sentinel-runner.service << EOF
 [Unit]
 Description=IP-Sentinel Runner Service
@@ -115,7 +123,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/runner.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/runner.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -141,7 +149,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/updater.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/updater.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -170,7 +178,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=oneshot
-ExecStart=/bin/bash ${INSTALL_DIR}/core/tg_report.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/tg_report.sh
 User=root
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
@@ -194,7 +202,7 @@ After=network.target
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SyslogIdentifier=ip-sentinel
 Type=simple
-ExecStart=/bin/bash ${INSTALL_DIR}/core/agent_daemon.sh
+ExecStart=${NETNS_EXEC}/bin/bash ${INSTALL_DIR}/core/agent_daemon.sh
 Restart=always
 RestartSec=5
 User=root
@@ -238,16 +246,16 @@ while true; do
     MIN=\$(date -u +%M)
     HOUR=\$(date -u +%H)
     if [ "\$MIN" == "00" ] || [ "\$MIN" == "20" ] || [ "\$MIN" == "40" ]; then
-        /bin/bash /opt/ip_sentinel/core/runner.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/runner.sh >/dev/null 2>&1
     fi
     if [ "\$HOUR" == "${DEPLOY_UTC_HOUR}" ] && [ "\$MIN" == "${DEPLOY_UTC_MIN}" ]; then
-        /bin/bash /opt/ip_sentinel/core/updater.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/updater.sh >/dev/null 2>&1
     fi
     if [ "\$HOUR" == "16" ] && [ "\$MIN" == "00" ]; then
-        /bin/bash /opt/ip_sentinel/core/tg_report.sh >/dev/null 2>&1
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/tg_report.sh >/dev/null 2>&1
     fi
     if ! pgrep -f 'webhook.py' >/dev/null; then
-        /bin/bash /opt/ip_sentinel/core/agent_daemon.sh >/dev/null 2>&1 &
+        ${NETNS_EXEC}/bin/bash /opt/ip_sentinel/core/agent_daemon.sh >/dev/null 2>&1 &
     fi
     sleep 60
 done
@@ -267,11 +275,11 @@ EOF
             
         else
             crontab -l 2>/dev/null | grep -v "ip_sentinel" > "${SECURE_TMP}/cron_backup" || true
-            echo "*/20 * * * * ${INSTALL_DIR}/core/runner.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
-            echo "${DEPLOY_UTC_MIN} ${DEPLOY_UTC_HOUR} * * * ${INSTALL_DIR}/core/updater.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
-            
+            echo "*/20 * * * * ${NETNS_EXEC}${INSTALL_DIR}/core/runner.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+            echo "${DEPLOY_UTC_MIN} ${DEPLOY_UTC_HOUR} * * * ${NETNS_EXEC}${INSTALL_DIR}/core/updater.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+
             if [[ -n "$TG_TOKEN" ]] && [[ -n "$CHAT_ID" ]]; then
-                echo "0 16 * * * ${INSTALL_DIR}/core/tg_report.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
+                echo "0 16 * * * ${NETNS_EXEC}${INSTALL_DIR}/core/tg_report.sh >/dev/null 2>&1" >> "${SECURE_TMP}/cron_backup"
                 echo "$SAFE_PUBLIC_IP" > "${INSTALL_DIR}/core/.last_ip"
                 DAEMON_IP=$( (curl -s -m 5 api.ip.sb/ip || curl -s -m 5 ifconfig.me) 2>/dev/null | tr -d '[:space:]' )
                 [ -n "$DAEMON_IP" ] && echo "$DAEMON_IP" > "${INSTALL_DIR}/core/.last_ip" || echo "$(echo "$SAFE_PUBLIC_IP" | tr -d '[]')" > "${INSTALL_DIR}/core/.last_ip"
