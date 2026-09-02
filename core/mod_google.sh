@@ -264,10 +264,10 @@ for ((i=1; i<=TOTAL_ACTIONS; i++)); do
 
     # [v4.1.3 & v4.1.5 修复] 统一执行 curl，70% 概率携带同业务域 Referer
     if [ -n "$CTX_REF" ] && [ $((RANDOM % 100)) -lt 70 ]; then
-        CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s -L -o /dev/null -w "%{http_code}" \
+        CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s --compressed -L -o /dev/null -w "%{http_code}" \
              -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" -H "Referer: $CTX_REF" "$TARGET_URL")
     else
-        CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s -L -o /dev/null -w "%{http_code}" \
+        CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s --compressed -L -o /dev/null -w "%{http_code}" \
              -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" "$TARGET_URL")
     fi
     CURL_EXIT=$?
@@ -305,11 +305,11 @@ for ((i=1; i<=TOTAL_ACTIONS; i++)); do
         fi
     fi
     
-    # 【核心升级】行为拉伸：每次动作后强制休眠 90 - 120 秒
-    # 结合动作总数，总耗时将稳定在 10 分钟 到 20 分钟之间
+    # 【核心升级】行为拉伸：每次动作后强制休眠 30 - 50 秒
+    # 结合动作总数，总耗时将稳定在 3 分钟 到 5 分钟之间
     if [ $i -lt $TOTAL_ACTIONS ]; then
-        # 【时间收敛修复】休眠控制在 45-75 秒，防止跨周期重叠导致进程被强杀
-        SLEEP_TIME=$((45 + RANDOM % 31))
+        # 【时间收敛修复】休眠控制在 30-50 秒，防止跨周期重叠导致进程被强杀
+        SLEEP_TIME=$((30 + RANDOM % 21))
         log "$MODULE_NAME" "WAIT " "阅读当前页面内容，模拟停留 $SLEEP_TIME 秒..."
         sleep "$SLEEP_TIME"
     fi
@@ -378,7 +378,7 @@ extract_yt_gl() {
 
 # 核心 2: YouTube Premium 区域锁嗅探
 YT_PR_GL=""
-YT_PR_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://www.youtube.com/premium")
+YT_PR_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed -L -A "$PROBE_UA" "https://www.youtube.com/premium")
 if [[ "$YT_PR_HTML" == *"www.google.cn"* ]]; then
     YT_PR_GL="CN"
 else
@@ -387,7 +387,7 @@ fi
 
 # 核心 3: YouTube Music 区域锁嗅探
 YT_MU_GL=""
-YT_MU_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://music.youtube.com/")
+YT_MU_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed -L -A "$PROBE_UA" "https://music.youtube.com/")
 if [[ "$YT_MU_HTML" == *"www.google.cn"* ]]; then
     YT_MU_GL="CN"
 else
@@ -413,8 +413,10 @@ done
 
 if [ $VALID_PROBES -eq 0 ]; then
     STATUS="🚨 探针失效 (三核全部熔断，可能遭严重风控拦截)"
+    GEO_VERDICT="BLIND"
 elif [ $IS_CN -eq 1 ]; then
     STATUS="❌ 严重高危！三核雷达判定 IP 已被中国大陆锁定 (送中)！"
+    GEO_VERDICT="CN"
 else
     # [权重仲裁] 以流媒体核心解锁状态为主导，允许基础网段跨国漂移
     YT_MATCH=0
@@ -422,15 +424,22 @@ else
     [ "$YT_MU_GL" == "$TARGET_CC" ] && YT_MATCH=1
 
     if [ $YT_MATCH -eq 1 ]; then
+        GEO_VERDICT="OK"
         if [ -n "$JUMP_GL" ] && [ "$JUMP_GL" != "$TARGET_CC" ]; then
             STATUS="✅ 目标区域达成 (YT主导成功, Jump副雷达漂移至 ${JUMP_GL}) | Prem: ${YT_PR_GL:-无} | Music: ${YT_MU_GL:-无}"
         else
             STATUS="✅ 目标区域达成 (Jump: ${JUMP_GL:-无} | Prem: ${YT_PR_GL:-无} | Music: ${YT_MU_GL:-无})"
         fi
     else
+        GEO_VERDICT="DRIFT"
         STATUS="⚠️ 区域发生漂移！目标 $TARGET_CC，实际 (Jump: ${JUMP_GL:-无} | Prem: ${YT_PR_GL:-无} | Music: ${YT_MU_GL:-无})"
     fi
 fi
 
 log "$MODULE_NAME" "SCORE" "自检结论: $STATUS"
+
+# [态势归档] 写入结构化事件流, 供池级日报做 per-IP / per-CIDR 归因
+declare -f sentinel_event >/dev/null 2>&1 && sentinel_event \
+    "$(echo "$CURRENT_IP" | tr -d '[]')" "geo" "$GEO_VERDICT" \
+    "jump=${JUMP_GL:-x},pr=${YT_PR_GL:-x},mu=${YT_MU_GL:-x},tgt=${TARGET_CC}"
 log "$MODULE_NAME" "END  " "========== 会话结束，释放进程 =========="

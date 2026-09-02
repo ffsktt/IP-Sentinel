@@ -139,6 +139,16 @@ _ip_pool_dispatch() {
 
     log "POOL" "INFO" "Pool: ${pool_size} IPs (ns=${ns_id:-default}), batch=${batch_size}, concurrency=${concurrency}"
 
+    # [调度预算校验] 一轮需要 ceil(batch/conc) 波、每波约 260s (单会话 p99)。
+    # 超出 20 分钟 cron 周期时 runner.sh 的 flock -n 会丢弃整轮而非仅丢尾巴，
+    # 吞吐直接腰斩，故在运行期告警——batch/conc 通常是手改 config.conf 得来的。
+    if [ "$concurrency" -gt 0 ] 2>/dev/null; then
+        local waves=$(( (batch_size + concurrency - 1) / concurrency ))
+        if [ $(( waves * 260 )) -gt 1020 ]; then
+            log "POOL" "WARN" "Schedule budget exceeded: batch=${batch_size}/conc=${concurrency} needs ~$(( waves * 260 / 60 ))min > 20min cron period; flock will drop whole rounds. Raise IP_CONCURRENCY or lower IP_BATCH_SIZE (ref 120/40)."
+        fi
+    fi
+
     local pids=()
     local tmp_files=()
     local orig_config="${CONFIG_FILE}"
@@ -182,7 +192,13 @@ _ip_pool_dispatch() {
 
         if [ -x "${INSTALL_DIR}/core/${target_mod}" ]; then
             log "POOL" "INFO" "Dispatch: ${mod_name} -> ${ip_addr}"
-            CONFIG_FILE="$tmp_cfg" nice -n 19 bash "${INSTALL_DIR}/core/${target_mod}" 200>&- &
+            # Per-job stagger replaces runner.sh's global jitter: it overlaps
+            # with sibling jobs (near-zero makespan cost) and spreads the first
+            # request of each wave instead of shifting the whole block.
+            # RANDOM is drawn in the parent so each subshell gets a distinct value.
+            local stagger=$((RANDOM % 30))
+            ( sleep "$stagger"
+              CONFIG_FILE="$tmp_cfg" nice -n 19 bash "${INSTALL_DIR}/core/${target_mod}" ) 200>&- &
             pids+=($!)
         fi
 
@@ -231,5 +247,10 @@ _ip_pool_dispatch() {
     trap - EXIT
 
     log "POOL" "INFO" "Batch complete: ${batch_size} IPs processed"
+
+    # [态势归档] 轮次标记：日报的覆盖率与巡回间隔需要池容量与轮次数做分母
+    declare -f sentinel_event >/dev/null 2>&1 && sentinel_event \
+        "-" "round" "-" "pool=${pool_size},batch=${batch_size},conc=${concurrency}"
+
     return 0
 }

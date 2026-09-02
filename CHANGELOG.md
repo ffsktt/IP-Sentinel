@@ -9,11 +9,22 @@
 - **Concurrent dispatch** — configurable `IP_BATCH_SIZE` and `IP_CONCURRENCY` with per-IP isolated config and cookie/persona separation
 - **Config-driven REPO_RAW_URL** — runtime scripts read OTA source from config.conf, supporting fork redirection without per-file edits
 - **Data/code URL separation** — `DATA_RAW_URL` (upstream) for keywords/UA/region data, `REPO_RAW_URL` (fork) for code OTA, eliminating data commit conflicts on rebase
+- **Pool-level daily report** — per-CIDR geo posture with four-state verdicts (OK / DRIFT / CN / BLIND), 24h coverage ratio, day-over-day deltas, and worst-segment offender samples, replacing the log-grep report that could only see ~0.4 of a single round
+- **Structured event stream** — `core/net_common.sh` gains `sentinel_event()`, an append-only TSV at `state/events-YYYYMMDD.tsv`. Lock-free under concurrent writers (a single sub-PIPE_BUF write to an O_APPEND fd is atomic on Linux), giving the per-IP attribution the interleaved free-text log cannot provide
+
+### ⚡ Performance
+- **Schedule budget fit** — batch makespan p99 cut from ~29 min to ~15 min at `IP_BATCH_SIZE=120` / `IP_CONCURRENCY=40`, so rounds no longer overrun the 20-minute cron window and get dropped whole by `runner.sh`'s `flock -n`. Effective throughput roughly doubles: ~4.5 → ~8.6 maintenance passes per IP per day
+- **Variance over mean** — `mod_trust.sh` dwell distribution collapsed from four buckets to three with a hard 90s ceiling (the old 5% / 180-480s tail alone drove over half the makespan overrun); `mod_google.sh` dwell narrowed to 30-50s. Action-count ranges and the three-tier probability shape are deliberately preserved — a robotic signature comes from low variance, not short duration
+- **Per-job stagger replaces global jitter** — the 0-180s pre-dispatch sleep in `runner.sh` was held inside the `flock` and burned schedule budget serially; pool mode now staggers each dispatched job by 0-30s inside `ip_pool.sh`, which overlaps with sibling jobs at near-zero makespan cost and spreads requests within the batch instead of shifting the whole block
+- **`--compressed` on HTML probes** — added to `mod_google.sh` roaming/YouTube requests and the `mod_quality.sh` fast-sonar probes. Outbound traffic drops ~40% versus the previous baseline even with throughput doubled (~37 GB/day → ~22 GB/day)
 
 ### 🔧 Changes
 - `CONFIG_FILE` in all modules changed from hardcoded to `${CONFIG_FILE:-default}` for per-IP override support
 - New file: `core/ip_pool.sh` — IP enumeration, CIDR filtering, batch selection, concurrent dispatch
 - All REPO_RAW_URL references redirected to `ffsktt/IP-Sentinel`
+- Log rotation in `core/updater.sh` switched from a fixed 2000-line truncation to 50 MiB size-based rotation; a pool node produces ~90k log lines per day, so the old threshold retained less than one round
+- `core/install.sh` now fetches `core/net_common.sh`, which had only ever been in the `install/sys_daemon.sh` OTA list — fresh installs silently lost both DoH bypass and the event stream because every call site is `declare -f` guarded
+- Runtime schedule-budget warning in `core/ip_pool.sh` when `ceil(batch/concurrency)` cannot fit the cron period
 
 ## [v4.3.4] - 2026-08-26
 

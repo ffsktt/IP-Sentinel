@@ -135,10 +135,21 @@ fi
 # ==========================================================
 # [空间瘦身] 长效健康清理与爆栈预防机制
 # ==========================================================
+# 多 IP 池节点单轮即产 ~2500 行日志、全天约 9 万行，原先固定保留 2000 行
+# 相当于只留下不到一轮的记录。改为按大小轮转，保留约两天的可排障窗口。
 if [ -f "$LOG_FILE" ]; then
-    tail -n 2000 "$LOG_FILE" > "${LOG_FILE}.tmp"
-    mv "${LOG_FILE}.tmp" "$LOG_FILE"
-    log "Updater" "INFO " "🧹 系统日志已完成定期清理瘦身 (保留最新 2000 行)"
+    LOG_MAX_BYTES=${LOG_MAX_BYTES:-52428800}    # 50 MiB
+    LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$LOG_SIZE" =~ ^[0-9]+$ ]] && [ "$LOG_SIZE" -gt "$LOG_MAX_BYTES" ]; then
+        mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null || true
+        : > "$LOG_FILE"
+        log "Updater" "INFO " "🧹 系统日志已轮转 (原文件 ${LOG_SIZE} 字节 -> ${LOG_FILE}.1)"
+    fi
+fi
+
+# [事件流保序] 结构化事件仅供日报的 48h 环比窗口使用，保留 3 天即足够
+if [ -d "${INSTALL_DIR}/state" ]; then
+    find "${INSTALL_DIR}/state" -maxdepth 1 -name 'events-*.tsv' -mtime +3 -delete 2>/dev/null || true
 fi
 
 log "Updater" "INFO " "========== OTA 养料注入与系统维护结束 =========="

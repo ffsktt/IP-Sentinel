@@ -184,16 +184,17 @@ for ((i=1; i<=STEP_COUNT; i++)); do
     fi
 
     # [v4.1.6] 泊松长尾生物钟拉伸，模拟人类真实阅读扫视习惯
+    # [调度收敛] 原第四档 (5% / 180-480s) 已移除：多 IP 池下单个长尾会话会把
+    # 整批 makespan 推过 20 分钟 cron 周期，触发 runner.sh 的 flock 丢弃整轮。
+    # 三档结构与相对方差 (CV) 保留，仅压缩绝对值并硬性封顶 90s。
     if [ $i -lt $STEP_COUNT ]; then
         SLEEP_DICE=$((RANDOM % 100))
-        if [ $SLEEP_DICE -lt 45 ]; then
-            SLEEP_TIME=$((8 + RANDOM % 13))    # 8 - 20s (45%)
-        elif [ $SLEEP_DICE -lt 80 ]; then
-            SLEEP_TIME=$((20 + RANDOM % 41))   # 20 - 60s (35%)
-        elif [ $SLEEP_DICE -lt 95 ]; then
-            SLEEP_TIME=$((60 + RANDOM % 121))  # 60 - 180s (15%)
+        if [ $SLEEP_DICE -lt 50 ]; then
+            SLEEP_TIME=$((8 + RANDOM % 11))    # 8 - 18s (50%)
+        elif [ $SLEEP_DICE -lt 85 ]; then
+            SLEEP_TIME=$((18 + RANDOM % 28))   # 18 - 45s (35%)
         else
-            SLEEP_TIME=$((180 + RANDOM % 300)) # 180 - 480s (5%)
+            SLEEP_TIME=$((45 + RANDOM % 46))   # 45 - 90s (15%)
         fi
         log_msg "WAIT " "正在浏览本地高权重页面，模拟停留 ${SLEEP_TIME}s..."
         sleep "$SLEEP_TIME"
@@ -204,10 +205,17 @@ done
 # 4. 结论判定与输出
 # ==========================================================
 if [ "$SUCCESS_INJECT" -ge $((STEP_COUNT / 2)) ]; then
+    TRUST_VERDICT="OK"
     log_msg "SCORE" "自检结论: ✅ 信用净化完成 (已成功注入 $SUCCESS_INJECT 条无害流量)"
 else
+    TRUST_VERDICT="BLOCKED"
     log_msg "SCORE" "自检结论: ❌ 净化受阻 (部分站点拦截或网络超时)"
 fi
+
+# [态势归档] 写入结构化事件流, 供池级日报做 per-IP / per-CIDR 归因
+declare -f sentinel_event >/dev/null 2>&1 && sentinel_event \
+    "$(echo "${PUBLIC_IP:-${BIND_IP:-unknown}}" | tr -d '[]')" "trust" "$TRUST_VERDICT" \
+    "${SUCCESS_INJECT}/${STEP_COUNT}"
 
 log_msg "END  " "========== 会话结束，释放进程 =========="
 log_msg "INFO " "系统级调度完毕，信任因子持续积累中..."

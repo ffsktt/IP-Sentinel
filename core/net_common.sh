@@ -28,6 +28,34 @@ _sentinel_net_log() {
     fi
 }
 
+# ==========================================================
+# Structured event stream (per-IP attribution for the pool report)
+#
+# The free-text log cannot be attributed back to a single IP: with
+# IP_CONCURRENCY writers the "current IP" line and the later verdict
+# line of one session are separated by hundreds of interleaved lines
+# and carry no session id. This append-only stream fixes that.
+#
+# Concurrency: a single write() of <PIPE_BUF (4096) bytes to an
+# O_APPEND fd is atomic on Linux. Event lines are ~80 bytes, so all
+# IP_CONCURRENCY writers can append lock-free.
+#
+# Schema (tab-separated):
+#   ts  ip  module  verdict  detail
+#   module  : geo | trust | fastqc | round
+#   verdict : OK | DRIFT | CN | BLIND   (geo, fastqc)
+#             OK | BLOCKED              (trust)
+#             -                         (round)
+# ==========================================================
+sentinel_event() {
+    local ip="${1:--}" module="$2" verdict="${3:--}" detail="${4:--}"
+    local dir="${INSTALL_DIR:-/opt/ip_sentinel}/state"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -u +%s)" "$ip" "$module" "$verdict" "$detail" \
+        >> "${dir}/events-$(date -u +%Y%m%d).tsv" 2>/dev/null || true
+}
+
 # --- globals produced by sentinel_net_init ---
 SENTINEL_DOH_URL=""
 CURL_BIND_ARGS=()

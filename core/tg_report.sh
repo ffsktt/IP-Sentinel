@@ -128,11 +128,217 @@ case "$BASE_CC" in
 esac
 
 # ==========================================================
-# 2. 行为日志萃取与快照分析
+# 2A. 池级态势聚合 (多 IP 节点)
+#
+# 自由文本日志无法做 per-IP 归因: IP_CONCURRENCY 个并发写入者会把同一会话的
+# "当前出网 IP" 行与其后的 [SCORE] 行冲散数百行, 且两者都不带 session id。
+# 故池级数字全部取自 net_common.sh 的结构化事件流, 与日志轮转彻底解耦。
+# 单 IP 节点无 round 事件, 聚合器以 exit 2 让位给下方的旧版扁平报文。
+# ==========================================================
+POOL_BLOCK=""
+if [ -d "${INSTALL_DIR}/state" ]; then
+    POOL_BLOCK=$(INSTALL_DIR="$INSTALL_DIR" IP_POOL_FILTER="${IP_POOL_FILTER:-}" python3 - <<'PYAGG'
+import os, sys, time, ipaddress
+
+root = os.environ.get('INSTALL_DIR', '/opt/ip_sentinel')
+state = os.path.join(root, 'state')
+now = int(time.time())
+
+# The 48h comparison window can span three UTC day files.
+rows = []
+for back in range(3):
+    d = time.strftime('%Y%m%d', time.gmtime(now - back * 86400))
+    try:
+        with open(os.path.join(state, 'events-%s.tsv' % d)) as f:
+            for line in f:
+                p = line.rstrip('\n').split('\t')
+                if len(p) != 5:
+                    continue
+                try:
+                    ts = int(p[0])
+                    # Reject unparseable addresses here so they cannot inflate
+                    # coverage or leak into the offender samples downstream.
+                    if p[2] != 'round':
+                        ipaddress.ip_address(p[1])
+                except ValueError:
+                    continue
+                rows.append((ts, p[1], p[2], p[3], p[4]))
+    except OSError:
+        pass
+
+if not rows:
+    sys.exit(2)
+
+W1, W2 = now - 86400, now - 172800
+# Upper bound tolerates events stamped in the current second (and up to a day
+# of forward clock skew); a bare `ts < now` silently drops them.
+INF = now + 86400
+
+def geo_state(lo, hi):
+    """Latest geo/fastqc verdict per IP within [lo, hi)."""
+    m = {}
+    for ts, ip, mod, verdict, detail in rows:
+        if mod in ('geo', 'fastqc') and lo <= ts < hi:
+            if ip not in m or ts > m[ip][0]:
+                m[ip] = (ts, verdict, detail)
+    return m
+
+cur, prev = geo_state(W1, INF), geo_state(W2, W1)
+
+pool = rounds = 0
+for ts, ip, mod, verdict, detail in rows:
+    if mod == 'round' and W1 <= ts < INF:
+        rounds += 1
+        for kv in detail.split(','):
+            if kv.startswith('pool='):
+                try:
+                    pool = max(pool, int(kv[5:]))
+                except ValueError:
+                    pass
+
+# Single-IP node (no pool markers): caller falls back to the legacy report.
+if pool <= 1:
+    sys.exit(2)
+
+t_total = t_ok = visits = 0
+seen = set()
+for ts, ip, mod, verdict, detail in rows:
+    if not (W1 <= ts < INF):
+        continue
+    if mod == 'trust':
+        t_total += 1
+        if verdict == 'OK':
+            t_ok += 1
+    if mod in ('geo', 'fastqc', 'trust'):
+        seen.add(ip)
+        visits += 1
+
+# CIDR grouping: IP_POOL_FILTER first-match (overlapping entries are not a
+# real scenario for a hand-written include list), else natural /24 or /48.
+nets = []
+for c in (os.environ.get('IP_POOL_FILTER') or '').split(','):
+    c = c.strip()
+    if c:
+        try:
+            nets.append(ipaddress.ip_network(c, strict=False))
+        except ValueError:
+            pass
+
+def group_of(ip):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    for n in nets:
+        if a in n:
+            return str(n)
+    plen = 24 if a.version == 4 else 48
+    return str(ipaddress.ip_network('%s/%d' % (ip, plen), strict=False))
+
+STATES = ('OK', 'DRIFT', 'CN', 'BLIND')
+
+def tally(m):
+    g = {}
+    for ip, (ts, verdict, detail) in m.items():
+        k = group_of(ip)
+        if k is None:
+            continue
+        d = g.setdefault(k, dict.fromkeys(STATES, 0))
+        if verdict in d:
+            d[verdict] += 1
+    return g
+
+gcur, gprev = tally(cur), tally(prev)
+tot = dict.fromkeys(STATES, 0)
+for d in gcur.values():
+    for s in STATES:
+        tot[s] += d[s]
+ntot = sum(tot.values()) or 1
+
+def cn_rate(d):
+    n = sum(d.values())
+    return (d['CN'] * 100.0 / n) if n else 0.0
+
+out = []
+lap = (24.0 * pool / visits) if visits else 0.0
+out.append('🌐 池 %d IP · 轮次 %d/72 · 巡回 %.1fh' % (pool, rounds, lap))
+out.append('🔄 24h 养护覆盖 %d/%d (%.1f%%)' % (len(seen), pool, len(seen) * 100.0 / pool))
+
+def delta(s):
+    if not gprev:
+        return ''
+    d = tot[s] - sum(x[s] for x in gprev.values())
+    return '' if d == 0 else (' (↑%d)' % d if d > 0 else ' (↓%d)' % -d)
+
+out.append('')
+out.append('🎯 **[区域态势]**')
+out.append('✅ %d (%.1f%%)  ⚠️ %d  ❌ %d%s  🚨 %d%s'
+           % (tot['OK'], tot['OK'] * 100.0 / ntot, tot['DRIFT'],
+              tot['CN'], delta('CN'), tot['BLIND'], delta('BLIND')))
+
+# Worst CN rate first; only the top 8 render, the rest fold into one line so
+# the message stays inside Telegram's 4096-char ceiling.
+ranked = sorted(gcur.items(), key=lambda kv: (-cn_rate(kv[1]), kv[0]))
+shown, hidden = ranked[:8], ranked[8:]
+w = max([len(k) for k, _ in shown] + [4])
+lines = ['%-*s %5s %5s %5s %5s %5s %8s %7s'
+         % (w, '网段', '已测', 'OK', 'DRIFT', 'CN', 'BLIND', '送中率', '环比')]
+alerts = []
+for k, d in shown:
+    r = cn_rate(d)
+    pr = cn_rate(gprev[k]) if k in gprev else None
+    lines.append('%-*s %5d %5d %5d %5d %5d %7.1f%% %7s'
+                 % (w, k, sum(d.values()), d['OK'], d['DRIFT'], d['CN'], d['BLIND'],
+                    r, '  —' if pr is None else ('%+.1f' % (r - pr))))
+    if r >= 5.0 or (pr is not None and r - pr >= 5.0):
+        alerts.append((k, r, pr))
+
+out.append('')
+out.append('🧭 **[网段分布]**')
+out.append('```')
+out.extend(lines)
+out.append('```')
+if hidden:
+    out.append('_其余 %d 段送中率 ≤ %.1f%%_' % (len(hidden), cn_rate(hidden[0][1])))
+for k, r, pr in alerts[:2]:
+    if pr is not None and r - pr >= 5.0:
+        out.append('🔴 `%s` 送中率 %.1f%% → %.1f%%，建议核查' % (k, pr, r))
+    else:
+        out.append('🔴 `%s` 送中率 %.1f%%，建议核查' % (k, r))
+
+# Rank offenders by how bad the owning segment is, then by recency: a one-off
+# CN in a healthy /24 is noise, the cluster in a degraded segment is the finding.
+cns = sorted(((ts, ip, detail) for ip, (ts, v, detail) in cur.items() if v == 'CN'),
+             key=lambda r: (-gcur.get(group_of(r[1]), {}).get('CN', 0), -r[0]))
+if cns:
+    out.append('')
+    out.append('❌ **[送中样本]** Jump/Prem/Music')
+    for ts, ip, detail in cns[:3]:
+        kv = dict(x.split('=', 1) for x in detail.split(',') if '=' in x)
+        out.append('`%s`  %s/%s/%s  %.1fh 前'
+                   % (ip, kv.get('jump', 'x'), kv.get('pr', 'x'),
+                      kv.get('mu', 'x'), (now - ts) / 3600.0))
+    if len(cns) > 3:
+        top = max(gcur.items(), key=lambda kv: kv[1]['CN'])
+        out.append('_共 %d 个，其中 %d 个属 `%s`_' % (len(cns), top[1]['CN'], top[0]))
+
+if t_total:
+    out.append('')
+    out.append('🔰 **[信用净化]** %d 轮 · 成功率 %.1f%%' % (t_total, t_ok * 100.0 / t_total))
+
+print('\n'.join(out))
+PYAGG
+) || POOL_BLOCK=""
+fi
+
+# ==========================================================
+# 2B. 行为日志萃取与快照分析 (单 IP 节点回退口径)
 # ==========================================================
 LOG_CONTENT=$(tail -n 1000 "$LOG_FILE" 2>/dev/null)
 
-if [ -z "$LOG_CONTENT" ]; then
+# 池级数据可用时不得走"无日志"告警：事件流独立于日志轮转，日志被截断
+# 并不代表节点失联。
+if [ -z "$LOG_CONTENT" ] && [ -z "$POOL_BLOCK" ]; then
     read -r -d '' MSG <<EOT
 🛑 **[IP-Sentinel] 告警：节点异常**
 ----------------------------
@@ -147,11 +353,22 @@ else
     LAST_MOD=$(echo "$LAST_LOG_LINE" | awk '{print $4}' | tr -d '[]')
     LAST_SCORE=$(echo "$LAST_LOG_LINE" | awk -F'自检结论: ' '{print $2}')
 
-    MSG="📊 **IP-Sentinel 每日简报 (${FLAG} ${REGION_NAME})**
+    if [ -n "$POOL_BLOCK" ]; then
+        MSG="📊 **IP-Sentinel 舰队简报 (${FLAG} ${REGION_NAME})**"
+    else
+        MSG="📊 **IP-Sentinel 每日简报 (${FLAG} ${REGION_NAME})**"
+    fi
+    MSG="$MSG
 ----------------------------
 📍 **节点名称**: \`${NODE_ALIAS}\`
 📡 **出口 IP**: \`${CURRENT_IP}\`
 🛡️ **IP 属性**: ${IP_TYPE}"
+
+    # 池级节点：整块态势由聚合器渲染，跳过下方基于日志 grep 的单 IP 口径
+    if [ -n "$POOL_BLOCK" ]; then
+        MSG="$MSG
+${POOL_BLOCK}"
+    else
 
     # [快速声呐] Quality 快速检测模块统计 (送中判定补充口径)
     # fast 探测在任一养护模块开启时均会执行，故统计独立于 Google 板块：
@@ -205,6 +422,8 @@ else
         fi
     fi
 
+    fi   # end: 单 IP 日志 grep 口径
+
     # [DNS 链路健康] DoH 降级与疑似劫持统计（仅在命中时渲染）
     DOH_FB_COUNT=$(echo "$LOG_CONTENT" | grep -c "DOH_FALLBACK")
     DNS_HJ_COUNT=$(echo "$LOG_CONTENT" | grep -c "DNS_HIJACK_SUSPECT")
@@ -215,12 +434,14 @@ else
 🔻 DoH 降级系统解析: ${DOH_FB_COUNT} 次 | 🕸️ 疑似 DNS 劫持: ${DNS_HJ_COUNT} 次"
     fi
 
-    # 追加末次快照
-    MSG="$MSG
+    # 追加末次快照 (池模式下这只是上千个 IP 里随机一个的结论，无参考价值，故跳过)
+    if [ -z "$POOL_BLOCK" ]; then
+        MSG="$MSG
 
 🕒 **最近执行快照:  \`${LAST_MOD:-"System"} \`**
 时间: ${LAST_TIME:-"暂无数据"} (节点本地)
 结论: ${LAST_SCORE:-"暂无数据"}"
+    fi
 
 fi
 

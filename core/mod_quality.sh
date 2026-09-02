@@ -157,7 +157,7 @@ if [[ "${QC_MODE}" == "fast" ]]; then
 
     # 核心 2: YouTube Premium 区域锁嗅探
     YT_PR_GL=""
-    YT_PR_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://www.youtube.com/premium")
+    YT_PR_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L --compressed -A "$PROBE_UA" "https://www.youtube.com/premium")
     if [[ "$YT_PR_HTML" == *"www.google.cn"* ]]; then
         YT_PR_GL="CN"
     else
@@ -166,7 +166,7 @@ if [[ "${QC_MODE}" == "fast" ]]; then
 
     # 核心 3: YouTube Music 区域锁嗅探
     YT_MU_GL=""
-    YT_MU_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L -A "$PROBE_UA" "https://music.youtube.com/")
+    YT_MU_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L --compressed -A "$PROBE_UA" "https://music.youtube.com/")
     if [[ "$YT_MU_HTML" == *"www.google.cn"* ]]; then
         YT_MU_GL="CN"
     else
@@ -185,13 +185,22 @@ if [[ "${QC_MODE}" == "fast" ]]; then
 
     if [ $VALID_PROBES -eq 0 ]; then
         FAST_STATUS="⚠️ 探针失效 (三核全部熔断，可能遭严重风控拦截)"
+        FAST_VERDICT="BLIND"
     elif [ $IS_CN -eq 1 ]; then
         FAST_STATUS="❌ 快速声呐判定 IP 已被中国大陆锁定 (送中)！"
+        FAST_VERDICT="CN"
     else
         FAST_STATUS="✅ 区域正常 (Jump: ${JUMP_GL:-无} | Prem: ${YT_PR_GL:-无} | Music: ${YT_MU_GL:-无})"
+        FAST_VERDICT="OK"
     fi
 
     log "Quality" "SCORE" "自检结论: $FAST_STATUS"
+
+    # [态势归档] 写入结构化事件流, 供池级日报做 per-IP / per-CIDR 归因
+    declare -f sentinel_event >/dev/null 2>&1 && sentinel_event \
+        "$(echo "${BIND_IP:-${PUBLIC_IP:-unknown}}" | tr -d '[]')" "fastqc" "$FAST_VERDICT" \
+        "jump=${JUMP_GL:-x},pr=${YT_PR_GL:-x},mu=${YT_MU_GL:-x}"
+
     log "Quality" "END  " "========== 快速声呐结束，释放进程 =========="
     exit 0
 fi

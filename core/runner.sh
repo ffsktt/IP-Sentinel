@@ -53,7 +53,14 @@ export CONFIG_FILE INSTALL_DIR
 if [ -t 1 ]; then
     log "SYSTEM" "INFO " "💻 检测到人工终端干预，跳过静默休眠，立即执行任务！"
 else
-    JITTER_TIME=$((RANDOM % 180))
+    # [预算保护] 全局 jitter 在 flock 之内串行空转，直接吃掉巡逻周期预算。
+    # 多 IP 池模式下改由 ip_pool.sh 给每个任务单独错峰 (与其他任务重叠执行，
+    # makespan 成本约为 0)，反指纹效果更强——打散批内请求而非平移整块。
+    if [[ -n "$MULTI_IP_MODE" ]] || [[ -n "$NETNS_NAME" ]]; then
+        JITTER_TIME=$((RANDOM % 30))
+    else
+        JITTER_TIME=$((RANDOM % 180))
+    fi
     log "SYSTEM" "INFO " "⏱️ 主控引擎由后台唤醒，进入防并发随机休眠状态: ${JITTER_TIME} 秒..."
     sleep $JITTER_TIME
 fi
@@ -68,6 +75,8 @@ if [[ -z "$MULTI_IP_MODE" ]] && [[ -n "$NETNS_NAME" ]]; then
     MULTI_IP_MODE="netns"
 fi
 if [[ -n "$MULTI_IP_MODE" ]] && [[ -f "${INSTALL_DIR}/core/ip_pool.sh" ]]; then
+    # net_common.sh 提供 sentinel_event()，ip_pool.sh 的轮次标记依赖它
+    [ -f "${INSTALL_DIR}/core/net_common.sh" ] && source "${INSTALL_DIR}/core/net_common.sh"
     source "${INSTALL_DIR}/core/ip_pool.sh"
     if _ip_pool_dispatch; then
         log "SYSTEM" "INFO" "本轮所有模块调度完毕，哨兵继续隐蔽待命。"
