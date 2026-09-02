@@ -200,7 +200,7 @@ for ts, ip, mod, verdict, detail in rows:
 if pool <= 1:
     sys.exit(2)
 
-t_total = t_ok = visits = 0
+t_total = t_ok = visits = doh_fb = hijack = 0
 seen = set()
 for ts, ip, mod, verdict, detail in rows:
     if not (W1 <= ts < INF):
@@ -209,8 +209,16 @@ for ts, ip, mod, verdict, detail in rows:
         t_total += 1
         if verdict == 'OK':
             t_ok += 1
+    elif mod == 'dns':
+        if verdict == 'DOH_FALLBACK':
+            doh_fb += 1
+        elif verdict == 'HIJACK':
+            hijack += 1
     if mod in ('geo', 'fastqc', 'trust'):
         seen.add(ip)
+    # fastqc is a read-only probe, not a maintenance pass, so it must not
+    # shorten the reported lap interval.
+    if mod in ('geo', 'trust'):
         visits += 1
 
 # CIDR grouping: IP_POOL_FILTER first-match (overlapping entries are not a
@@ -326,6 +334,12 @@ if t_total:
     out.append('')
     out.append('🔰 **[信用净化]** %d 轮 · 成功率 %.1f%%' % (t_total, t_ok * 100.0 / t_total))
 
+# Counted from the same 24h window as everything above; the legacy log-grep
+# path below would only see the last ~1000 lines (a fraction of one round).
+if doh_fb or hijack:
+    out.append('')
+    out.append('⚠️ **[DNS 链路健康]** DoH 降级 %d 次 · 疑似劫持 %d 次' % (doh_fb, hijack))
+
 print('\n'.join(out))
 PYAGG
 ) || POOL_BLOCK=""
@@ -425,9 +439,11 @@ ${POOL_BLOCK}"
     fi   # end: 单 IP 日志 grep 口径
 
     # [DNS 链路健康] DoH 降级与疑似劫持统计（仅在命中时渲染）
+    # 池模式由聚合器按同一 24h 窗口渲染；此处的 tail -n 1000 口径在池节点上
+    # 只覆盖不到一轮，会把数量低报约两个数量级，故仅用于单 IP 节点。
     DOH_FB_COUNT=$(echo "$LOG_CONTENT" | grep -c "DOH_FALLBACK")
     DNS_HJ_COUNT=$(echo "$LOG_CONTENT" | grep -c "DNS_HIJACK_SUSPECT")
-    if [ "$DOH_FB_COUNT" -gt 0 ] || [ "$DNS_HJ_COUNT" -gt 0 ]; then
+    if [ -z "$POOL_BLOCK" ] && { [ "$DOH_FB_COUNT" -gt 0 ] || [ "$DNS_HJ_COUNT" -gt 0 ]; }; then
         MSG="$MSG
 
 ⚠️ **[DNS 链路健康]**

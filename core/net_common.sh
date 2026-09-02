@@ -105,6 +105,7 @@ _sentinel_select_doh() {
     done
 
     _sentinel_net_log "WARN " "DOH_FALLBACK all DoH endpoints unreachable, fallback to system DNS"
+    sentinel_event "$(echo "${BIND_IP:-${PUBLIC_IP:-unknown}}" | tr -d '[]')" "dns" "DOH_FALLBACK" "-"
     return 1
 }
 
@@ -114,6 +115,7 @@ _sentinel_hijack_check() {
     sys_ip=$(getent ahostsv4 www.google.com 2>/dev/null | awk '{print $1; exit}')
     if [[ -n "$sys_ip" ]] && _sentinel_is_private_ip "$sys_ip"; then
         _sentinel_net_log "WARN " "DNS_HIJACK_SUSPECT system resolver returned non-public IP (${sys_ip}) for www.google.com"
+        sentinel_event "$(echo "${BIND_IP:-${PUBLIC_IP:-unknown}}" | tr -d '[]')" "dns" "HIJACK" "sys=${sys_ip}"
     fi
 }
 

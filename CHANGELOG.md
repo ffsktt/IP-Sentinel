@@ -25,6 +25,7 @@
 - Log rotation in `core/updater.sh` switched from a fixed 2000-line truncation to 50 MiB size-based rotation; a pool node produces ~90k log lines per day, so the old threshold retained less than one round
 - `core/install.sh` now fetches `core/net_common.sh`, which had only ever been in the `install/sys_daemon.sh` OTA list — fresh installs silently lost both DoH bypass and the event stream because every call site is `declare -f` guarded
 - Runtime schedule-budget warning in `core/ip_pool.sh` when `ceil(batch/concurrency)` cannot fit the cron period
+- DoH degradation and DNS-hijack counts are emitted as `dns` events by `core/net_common.sh`, so on pool nodes they share the report's 24h window; the legacy `tail -n 1000` sample would have under-reported them by roughly two orders of magnitude, and it now renders only for single-IP nodes
 
 ## [v4.3.4] - 2026-08-26
 
