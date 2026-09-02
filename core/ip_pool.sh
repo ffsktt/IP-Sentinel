@@ -156,8 +156,14 @@ _ip_pool_dispatch() {
     _ip_pool_cleanup() { for f in "${tmp_files[@]}"; do rm -f "$f"; done; }
     trap _ip_pool_cleanup EXIT
 
+    # `wait -n` needs bash >= 4.3. The previous probe — (wait -n 2>/dev/null; true)
+    # — was unconditionally true because `; true` swallowed the return value, so
+    # on an older bash (CentOS 7) the reap step never blocked and the entire
+    # batch went concurrent at once instead of honouring IP_CONCURRENCY.
     local has_wait_n=false
-    (wait -n 2>/dev/null; true) 2>/dev/null && has_wait_n=true
+    if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )); then
+        has_wait_n=true
+    fi
 
     for ip_addr in "${_IP_BATCH[@]}"; do
         local ip_pref="4"

@@ -104,8 +104,19 @@ if [[ "${QC_MODE}" == "fast" ]]; then
         fi
     fi
 
+    # [HTML 兜底] net_common.sh 缺失、或 sw.js_data 版式变更时退回整页正则提取。
     extract_yt_gl() {
         grep -Eo '"(contentRegion|countryCode|INNERTUBE_CONTEXT_GL|GL)":"[A-Za-z]{2}"' | head -n 1 | cut -d'"' -f4 | tr 'a-z' 'A-Z'
+    }
+
+    yt_html_probe() {
+        local html
+        html=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L --compressed -A "$PROBE_UA" "$1")
+        if [[ "$html" == *"www.google.cn"* ]]; then
+            echo "CN"
+        else
+            printf '%s' "$html" | extract_yt_gl
+        fi
     }
 
     log "Quality" "START" "========== 唤醒快速声呐 [区域: $REGION_NAME] =========="
@@ -155,23 +166,26 @@ if [[ "${QC_MODE}" == "fast" ]]; then
         esac
     fi
 
-    # 核心 2: YouTube Premium 区域锁嗅探
-    YT_PR_GL=""
-    YT_PR_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L --compressed -A "$PROBE_UA" "https://www.youtube.com/premium")
-    if [[ "$YT_PR_HTML" == *"www.google.cn"* ]]; then
-        YT_PR_GL="CN"
+    # 核心 2 / 3: YouTube 区域锁嗅探 (sw.js_data 优先，HTML 兜底)
+    YT_EGRESS_IP=""
+
+    if declare -f sentinel_yt_probe >/dev/null 2>&1 && sentinel_yt_probe "www.youtube.com"; then
+        YT_PR_GL="$SENTINEL_YT_GL"
+        YT_EGRESS_IP="$SENTINEL_YT_IP"
     else
-        YT_PR_GL=$(printf '%s' "$YT_PR_HTML" | extract_yt_gl)
+        YT_PR_GL=$(yt_html_probe "https://www.youtube.com/premium")
     fi
 
-    # 核心 3: YouTube Music 区域锁嗅探
-    YT_MU_GL=""
-    YT_MU_HTML=$(curl "${FAST_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s -L --compressed -A "$PROBE_UA" "https://music.youtube.com/")
-    if [[ "$YT_MU_HTML" == *"www.google.cn"* ]]; then
-        YT_MU_GL="CN"
+    if declare -f sentinel_yt_probe >/dev/null 2>&1 && sentinel_yt_probe "music.youtube.com"; then
+        YT_MU_GL="$SENTINEL_YT_GL"
+        [ -n "$YT_EGRESS_IP" ] || YT_EGRESS_IP="$SENTINEL_YT_IP"
     else
-        YT_MU_GL=$(printf '%s' "$YT_MU_HTML" | extract_yt_gl)
+        YT_MU_GL=$(yt_html_probe "https://music.youtube.com/")
     fi
+
+    # [出口校验] 绑定地址 vs Google 实际观测到的地址
+    declare -f sentinel_check_egress >/dev/null 2>&1 && sentinel_check_egress \
+        "$(echo "${BIND_IP:-${PUBLIC_IP}}" | tr -d '[]')" "$YT_EGRESS_IP"
 
     # [终极审判] 任一核心命中 CN 即判定送中
     IS_CN=0

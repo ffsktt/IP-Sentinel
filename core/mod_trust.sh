@@ -132,7 +132,9 @@ else
             log_msg "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
             CURL_BIND_ARGS=()
         else
-            CURL_BIND_ARGS=(--interface "$BIND_IP")
+            # curl --interface rejects the bracketed IPv6 form that ip_pool.sh
+            # writes into the per-job config, so bind the stripped address.
+            CURL_BIND_ARGS=(--interface "$RAW_BIND_IP")
             if [[ "$BIND_IP" == *":"* ]]; then
                 DYNAMIC_IP_PREF="-6"
                 log_msg "INFO " "底层路由锁定: 绑定 IPv6 出口及协议 ($BIND_IP)"
@@ -142,6 +144,13 @@ else
             fi
         fi
     fi
+fi
+
+# [语言指纹对齐] 原先对所有区域硬编码 en-US，与本地化白名单站点及会话画像矛盾。
+if declare -f sentinel_accept_language >/dev/null 2>&1; then
+    ACCEPT_LANG=$(sentinel_accept_language)
+else
+    ACCEPT_LANG="en-US,en;q=0.9"
 fi
 
 STEP_COUNT=$((RANDOM % 4 + 3))
@@ -154,7 +163,7 @@ for ((i=1; i<=STEP_COUNT; i++)); do
     HTTP_CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" \
         -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$CURRENT_UA" \
         -H "Accept: text/html,application/xhtml+xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
-        -H "Accept-Language: en-US,en;q=0.9" \
+        -H "Accept-Language: $ACCEPT_LANG" \
         -H "Sec-Fetch-Dest: document" \
         -H "Sec-Fetch-Mode: navigate" \
         -H "Upgrade-Insecure-Requests: 1" \

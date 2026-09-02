@@ -164,7 +164,9 @@ else
         log "$MODULE_NAME" "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
         CURL_BIND_ARGS=()
         else
-            CURL_BIND_ARGS=(--interface "$BIND_IP")
+            # curl --interface rejects the bracketed IPv6 form that ip_pool.sh
+            # writes into the per-job config, so bind the stripped address.
+            CURL_BIND_ARGS=(--interface "$RAW_BIND_IP")
             if [[ "$BIND_IP" == *":"* ]]; then
                 DYNAMIC_IP_PREF="-6"
                 log "$MODULE_NAME" "INFO " "底层路由锁定: 绑定 IPv6 出口及协议 ($BIND_IP)"
@@ -174,6 +176,15 @@ else
             fi
         fi
     fi
+fi
+
+# [语言指纹对齐] Accept-Language 由区域 LANG_PARAMS 派生
+# 此前本模块完全不发该头，而会话的 UA / hl= 都是本地化的，属于自相矛盾的特征。
+# LANG_ACCEPT 同时供下方生态漫游池的 ?hl= 使用（原先该变量全仓库无赋值）。
+if declare -f sentinel_accept_language >/dev/null 2>&1; then
+    LANG_ACCEPT=$(sentinel_accept_language)
+else
+    LANG_ACCEPT="en-US,en;q=0.9"
 fi
 
 # [v4.1.5 修复] 业务域 Referer 隔离池初始化
@@ -265,10 +276,12 @@ for ((i=1; i<=TOTAL_ACTIONS; i++)); do
     # [v4.1.3 & v4.1.5 修复] 统一执行 curl，70% 概率携带同业务域 Referer
     if [ -n "$CTX_REF" ] && [ $((RANDOM % 100)) -lt 70 ]; then
         CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s --compressed -L -o /dev/null -w "%{http_code}" \
-             -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" -H "Referer: $CTX_REF" "$TARGET_URL")
+             -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" \
+             -H "Accept-Language: $LANG_ACCEPT" -H "Referer: $CTX_REF" "$TARGET_URL")
     else
         CODE=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 15 -s --compressed -L -o /dev/null -w "%{http_code}" \
-             -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" "$TARGET_URL")
+             -b "$COOKIE_FILE" -c "$COOKIE_FILE" -A "$SESSION_UA" \
+             -H "Accept-Language: $LANG_ACCEPT" "$TARGET_URL")
     fi
     CURL_EXIT=$?
     
@@ -318,7 +331,7 @@ done
 # -----------------------------------------------------------
 # [态势感知] 三核探测雷达 (跳转 / Premium / Music)
 # -----------------------------------------------------------
-log "$MODULE_NAME" "INFO " "启动三核交叉验证 (URL跳转 + YT Premium + YT Music) 穿透获取 GeoIP..."
+log "$MODULE_NAME" "INFO " "启动三核交叉验证 (URL跳转 + YT 主站 + YT Music) 穿透获取 GeoIP..."
 
 # 核心 1: 传统 URL 跳转探测 (请求 www 才能触发准确跳转)
 # [v4.1.2] 追加持久化 Cookie
@@ -327,7 +340,13 @@ JUMP_LOC=$(echo "$JUMP_HDR" | grep -i "^location:" | tr -d '\r\n')
 JUMP_GL=""
 
 if [ -z "$JUMP_LOC" ]; then
-    JUMP_GL="US"
+    # No Location at all is the normal case since Google dropped ccTLD
+    # redirection (2017) and folded every ccTLD back into google.com (2025):
+    # http://www.google.com/ now answers 200 directly. Treating that as "US"
+    # made VALID_PROBES permanently >=1, so BLIND became unreachable here and a
+    # total probe outage was filed as DRIFT. Report "no signal" instead, matching
+    # mod_quality.sh's fast branch.
+    JUMP_GL=""
 elif [[ "$JUMP_LOC" == *".google.cn"* ]] || [[ "$JUMP_LOC" == *"gl=CN"* ]]; then
     JUMP_GL="CN"
 elif [[ "$JUMP_LOC" == *"gl="* ]]; then
@@ -372,27 +391,44 @@ fi
 # ==========================================================
 PROBE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+# [HTML 兜底] net_common.sh 缺失、或 sw.js_data 版式变更时退回整页正则提取。
 extract_yt_gl() {
     grep -Eo '"(contentRegion|countryCode|INNERTUBE_CONTEXT_GL|GL)":"[A-Za-z]{2}"' | head -n 1 | cut -d'"' -f4 | tr 'a-z' 'A-Z'
 }
 
-# 核心 2: YouTube Premium 区域锁嗅探
-YT_PR_GL=""
-YT_PR_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed -L -A "$PROBE_UA" "https://www.youtube.com/premium")
-if [[ "$YT_PR_HTML" == *"www.google.cn"* ]]; then
-    YT_PR_GL="CN"
+yt_html_probe() {
+    local html
+    html=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed -L -A "$PROBE_UA" "$1")
+    if [[ "$html" == *"www.google.cn"* ]]; then
+        echo "CN"
+    else
+        printf '%s' "$html" | extract_yt_gl
+    fi
+}
+
+# 核心 2 / 3: YouTube 区域锁嗅探
+# 优先走 sw.js_data (~1.5 KB, 对比 /premium 的 ~92 KB 与 music 首页的 ~43 KB)，
+# 顺带取回 Google 观测到的出口 IP 用于校验 --interface 是否真的生效。
+YT_EGRESS_IP=""
+
+if declare -f sentinel_yt_probe >/dev/null 2>&1 && sentinel_yt_probe "www.youtube.com"; then
+    YT_PR_GL="$SENTINEL_YT_GL"
+    YT_EGRESS_IP="$SENTINEL_YT_IP"
 else
-    YT_PR_GL=$(printf '%s' "$YT_PR_HTML" | extract_yt_gl)
+    YT_PR_GL=$(yt_html_probe "https://www.youtube.com/premium")
 fi
 
-# 核心 3: YouTube Music 区域锁嗅探
-YT_MU_GL=""
-YT_MU_HTML=$(curl "${CURL_BIND_ARGS[@]}" "$DYNAMIC_IP_PREF" -m 12 -s --compressed -L -A "$PROBE_UA" "https://music.youtube.com/")
-if [[ "$YT_MU_HTML" == *"www.google.cn"* ]]; then
-    YT_MU_GL="CN"
+if declare -f sentinel_yt_probe >/dev/null 2>&1 && sentinel_yt_probe "music.youtube.com"; then
+    YT_MU_GL="$SENTINEL_YT_GL"
+    [ -n "$YT_EGRESS_IP" ] || YT_EGRESS_IP="$SENTINEL_YT_IP"
 else
-    YT_MU_GL=$(printf '%s' "$YT_MU_HTML" | extract_yt_gl)
+    YT_MU_GL=$(yt_html_probe "https://music.youtube.com/")
 fi
+
+# [出口校验] 绑定地址与 Google 实际观测到的地址不一致，意味着本轮裁决其实属于
+# 另一个 IP——netns 路由或策略路由绕开了 --interface，且此前完全无告警。
+declare -f sentinel_check_egress >/dev/null 2>&1 && sentinel_check_egress \
+    "$(echo "$CURRENT_IP" | tr -d '[]')" "$YT_EGRESS_IP"
 
 # [坐标规整] 兼容横杠分割体系，并修正英区缩写
 TARGET_CC="${REGION_CODE%%-*}"

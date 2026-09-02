@@ -202,6 +202,7 @@ if pool <= 1:
 
 t_total = t_ok = visits = doh_fb = hijack = 0
 seen = set()
+egress_mm = set()
 for ts, ip, mod, verdict, detail in rows:
     if not (W1 <= ts < INF):
         continue
@@ -214,6 +215,10 @@ for ts, ip, mod, verdict, detail in rows:
             doh_fb += 1
         elif verdict == 'HIJACK':
             hijack += 1
+    elif mod == 'egress':
+        # Google observed a different source address than the job bound, so the
+        # geo verdict recorded for this IP actually describes another one.
+        egress_mm.add(ip)
     if mod in ('geo', 'fastqc', 'trust'):
         seen.add(ip)
     # fastqc is a read-only probe, not a maintenance pass, so it must not
@@ -339,6 +344,14 @@ if t_total:
 if doh_fb or hijack:
     out.append('')
     out.append('⚠️ **[DNS 链路健康]** DoH 降级 %d 次 · 疑似劫持 %d 次' % (doh_fb, hijack))
+
+# Ranks above everything else: a source-pinning failure invalidates the geo
+# numbers themselves rather than merely degrading them.
+if egress_mm:
+    out.append('')
+    out.append('🧨 **[出口绑定异常]** %d 个 IP 的探测流量未从自身出网，其区域裁决不可信'
+               % len(egress_mm))
+    out.append('样本 %s' % ' '.join('`%s`' % x for x in sorted(egress_mm)[:3]))
 
 print('\n'.join(out))
 PYAGG
