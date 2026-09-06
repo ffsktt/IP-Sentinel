@@ -162,8 +162,11 @@ else
     [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
     if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
         # [防线校验] 探测物理网卡存活状态，防 IP 漂移引发通信雪崩
-        # [v4.1.5 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致网卡死锁失效
-        if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+        # -Fqw 缺一不可: -F 阻止 IPv4 的点号被当成正则通配，-w 阻止前缀误命中
+        # ("198.51.100.21" 会命中只含 "198.51.100.216" 的行，使已消失的地址被判为
+        # 存活，随后 curl 绑定失败、整轮探测空转而无任何降级告警；池覆盖整个 /24
+        # 时这类前缀对大量存在)
+        if ! ip addr show 2>/dev/null | grep -Fqw "$RAW_BIND_IP"; then
         log "$MODULE_NAME" "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
         CURL_BIND_ARGS=()
         else
@@ -346,9 +349,11 @@ if [ -z "$JUMP_LOC" ]; then
     # No Location at all is the normal case since Google dropped ccTLD
     # redirection (2017) and folded every ccTLD back into google.com (2025):
     # http://www.google.com/ now answers 200 directly. Treating that as "US"
-    # made VALID_PROBES permanently >=1, so BLIND became unreachable here and a
-    # total probe outage was filed as DRIFT. Report "no signal" instead, matching
-    # mod_quality.sh's fast branch.
+    # made the jump radar permanently non-empty, which used to keep BLIND
+    # unreachable and file a total probe outage as DRIFT. Report "no signal"
+    # instead, matching mod_quality.sh's fast branch. (The verdict block below
+    # no longer leans on that count, but a bogus "US" would still pollute the
+    # drift status line and the event detail.)
     JUMP_GL=""
 elif [[ "$JUMP_LOC" == *".google.cn"* ]] || [[ "$JUMP_LOC" == *"gl=CN"* ]]; then
     JUMP_GL="CN"
@@ -441,22 +446,19 @@ TARGET_CC="${REGION_CODE%%-*}"
 # [终极审判] 异常过滤与一致性裁决机制
 # -----------------------------------------------------------
 IS_CN=0
-VALID_PROBES=0
 
 for val in "$JUMP_GL" "$YT_PR_GL" "$YT_MU_GL"; do
-    if [ -n "$val" ]; then
-        ((VALID_PROBES++))
-        [ "$val" == "CN" ] && IS_CN=1
-    fi
+    [ "$val" == "CN" ] && IS_CN=1
 done
 
 # 送中优先于熔断：任一核心喊出 CN 都是强信号，哪怕另外两核已经哑火。
 if [ $IS_CN -eq 1 ]; then
     STATUS="❌ 严重高危！三核雷达判定 IP 已被中国大陆锁定 (送中)！"
     GEO_VERDICT="CN"
-elif [ $VALID_PROBES -eq 0 ] || { [ -z "$YT_PR_GL" ] && [ -z "$YT_MU_GL" ]; }; then
+elif [ -z "$YT_PR_GL" ] && [ -z "$YT_MU_GL" ]; then
     # 仲裁权重全部压在 YT 双核上 (见下方 YT_MATCH)，两核同时熄火时 Jump 副雷达
     # 无法独立定区：走 else 分支必然得到 YT_MATCH=0，把一次探测中断误判成漂移。
+    # 该条件已覆盖旧的"三核全空"判据——三核全空必然蕴含 YT 双核为空。
     STATUS="🚨 探针失效 (YT 双核熔断，可能遭严重风控拦截)"
     GEO_VERDICT="BLIND"
 else

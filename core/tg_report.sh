@@ -60,7 +60,7 @@ else
     RAW_BIND_IP=""
     [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
     if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
-        if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+        if ! ip addr show 2>/dev/null | grep -Fqw "$RAW_BIND_IP"; then
             CURL_BIND_OPT=""
         else
             # curl --interface 不接受带方括号的 IPv6，必须绑剥离后的地址

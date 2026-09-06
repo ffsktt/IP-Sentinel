@@ -130,8 +130,9 @@ else
     RAW_BIND_IP=""
     [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
     if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
-        # [v4.1.6 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致误杀
-        if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+        # -Fqw 缺一不可: -F 阻止 IPv4 的点号被当成正则通配，-w 阻止前缀误命中
+        # ("198.51.100.21" 会命中只含 "198.51.100.216" 的行)
+        if ! ip addr show 2>/dev/null | grep -Fqw "$RAW_BIND_IP"; then
             log_msg "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
             CURL_BIND_ARGS=()
         else

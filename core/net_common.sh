@@ -116,8 +116,8 @@ _sentinel_doh_ok() {
 # ----------------------------------------------------------
 # Selected-endpoint cache
 #
-# sentinel_net_init runs once per session and a pool node opens ~8.6k sessions a
-# day, so re-probing every candidate every time cost one example.com round trip
+# sentinel_net_init runs once per session and a pool node opens thousands of
+# sessions a day, so re-probing every candidate every time cost one round trip
 # per session — and up to 4x6s whenever the leading endpoints were down. Caching
 # the winner per address family collapses that to a couple of probes per hour.
 # PROBE_DOH_TTL=0 restores the previous probe-every-session behaviour.
@@ -200,12 +200,12 @@ _sentinel_select_doh() {
 # ==========================================================
 # Hijack self-check: system resolver returning a non-global IP for a public site.
 #
-# Only meaningful once DoH selection has failed. On a node that fronts its own
-# sniproxy the system resolver is hijacked *by design* — that is precisely what
+# Only meaningful once DoH selection has failed. Where the resolver is redirected
+# to a local interception proxy the hijack is deliberate — that is precisely what
 # PROBE_DOH_URLS exists to route around — so while a DoH endpoint is in hand the
-# hijack is a fact about an unused resolver, not a defect: it fired once per
-# session, i.e. once per IP per round, and buried the DoH-degradation signal it
-# was meant to accompany under tens of thousands of events a day.
+# hijack is a fact about an unused resolver, not a defect. Ungated it fired once
+# per session, i.e. once per IP per round on a pool node, burying the
+# DoH-degradation signal it is meant to accompany.
 # ==========================================================
 _sentinel_hijack_check() {
     [[ -z "$SENTINEL_DOH_URL" ]] || return 0
@@ -239,9 +239,16 @@ sentinel_net_init() {
     # The class must not carry backslash escapes either: inside a POSIX bracket
     # expression "\" is a literal member, so the old "\." merely widened the set.
     local raw_bind=""
-    [ -n "$BIND_IP" ] && raw_bind=$(echo "$BIND_IP" | tr -d '[]')
-    if [[ "$mode" != "doh-only" && "$raw_bind" =~ ^[0-9a-fA-F:.]+$ ]]; then
-        if ! ip addr show 2>/dev/null | grep -Fq "$raw_bind"; then
+    if [[ "$mode" != "doh-only" && -n "$BIND_IP" ]]; then
+        raw_bind=$(echo "$BIND_IP" | tr -d '[]')
+    fi
+    if [[ "$raw_bind" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        # -Fqw needs both flags: -F stops an IPv4 dot from acting as a regex
+        # wildcard, -w stops a prefix hit — "198.51.100.21" would otherwise match
+        # a line holding only "198.51.100.216", so a departed address reads as
+        # live and curl then fails to bind with no degradation warning anywhere.
+        # A pool spanning a whole /24 is full of such prefix pairs.
+        if ! ip addr show 2>/dev/null | grep -Fqw "$raw_bind"; then
             _sentinel_net_log "WARN " "configured egress IP ($raw_bind) lost, degraded to default route"
             CURL_BIND_ARGS=()
         else

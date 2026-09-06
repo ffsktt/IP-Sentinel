@@ -98,7 +98,7 @@ if [[ "${QC_MODE}" == "fast" ]]; then
             # curl --interface 不接受带方括号的 IPv6，必须剥离后绑定；
             # 若出口 IP 已漂移丢失，则降级为系统默认路由出网（与 mod_google 防线一致）。
             RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
-            if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+            if ip addr show 2>/dev/null | grep -Fqw "$RAW_BIND_IP"; then
                 FAST_BIND_ARGS=(--interface "$RAW_BIND_IP")
             fi
         fi
@@ -234,7 +234,7 @@ RAW_BIND_IP=""
 if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
     # 严格探测物理网卡/虚拟 IP 存活状态，防止 IP 漂移导致探针彻底报错
     # 与其余模块一致改用 -Fq: -qw 会把 IPv6 的冒号当作单词边界而误判
-    if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
+    if ip addr show 2>/dev/null | grep -Fqw "$RAW_BIND_IP"; then
         # 挂载原生出网网卡
         PROBE_ARGS+=("-i" "$RAW_BIND_IP")
         
