@@ -156,9 +156,12 @@ if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
     source "${INSTALL_DIR}/core/net_common.sh"
     sentinel_net_init
 else
-    if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
+    # [护甲剥离前置] ip_pool.sh 注入的 IPv6 带 []，必须先剥再校验，
+    # 否则带括号的 V6 一律落空、静默降级为默认路由出网。
+    RAW_BIND_IP=""
+    [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+    if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
         # [防线校验] 探测物理网卡存活状态，防 IP 漂移引发通信雪崩
-        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
         # [v4.1.5 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致网卡死锁失效
         if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
         log "$MODULE_NAME" "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"
@@ -447,12 +450,15 @@ for val in "$JUMP_GL" "$YT_PR_GL" "$YT_MU_GL"; do
     fi
 done
 
-if [ $VALID_PROBES -eq 0 ]; then
-    STATUS="🚨 探针失效 (三核全部熔断，可能遭严重风控拦截)"
-    GEO_VERDICT="BLIND"
-elif [ $IS_CN -eq 1 ]; then
+# 送中优先于熔断：任一核心喊出 CN 都是强信号，哪怕另外两核已经哑火。
+if [ $IS_CN -eq 1 ]; then
     STATUS="❌ 严重高危！三核雷达判定 IP 已被中国大陆锁定 (送中)！"
     GEO_VERDICT="CN"
+elif [ $VALID_PROBES -eq 0 ] || { [ -z "$YT_PR_GL" ] && [ -z "$YT_MU_GL" ]; }; then
+    # 仲裁权重全部压在 YT 双核上 (见下方 YT_MATCH)，两核同时熄火时 Jump 副雷达
+    # 无法独立定区：走 else 分支必然得到 YT_MATCH=0，把一次探测中断误判成漂移。
+    STATUS="🚨 探针失效 (YT 双核熔断，可能遭严重风控拦截)"
+    GEO_VERDICT="BLIND"
 else
     # [权重仲裁] 以流媒体核心解锁状态为主导，允许基础网段跨国漂移
     YT_MATCH=0

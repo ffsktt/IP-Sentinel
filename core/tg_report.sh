@@ -56,12 +56,15 @@ if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
     sentinel_net_init
     CURL_BIND_OPT="${CURL_BIND_ARGS[*]}"
 else
-    if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
-        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
-        if ! ip addr show 2>/dev/null | grep -qw "$RAW_BIND_IP"; then
+    # [护甲剥离前置] 带 [] 的 IPv6 必须先剥再校验，否则一律落空降级
+    RAW_BIND_IP=""
+    [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+    if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
             CURL_BIND_OPT=""
         else
-            CURL_BIND_OPT="--interface $BIND_IP"
+            # curl --interface 不接受带方括号的 IPv6，必须绑剥离后的地址
+            CURL_BIND_OPT="--interface $RAW_BIND_IP"
             if [[ "$BIND_IP" == *":"* ]]; then
                 DYNAMIC_IP_PREF="-6"
             elif [[ "$BIND_IP" == *"."* ]]; then

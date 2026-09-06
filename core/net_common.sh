@@ -197,8 +197,19 @@ _sentinel_select_doh() {
     return 1
 }
 
-# hijack self-check: system resolver returning non-global IP for a public site
+# ==========================================================
+# Hijack self-check: system resolver returning a non-global IP for a public site.
+#
+# Only meaningful once DoH selection has failed. On a node that fronts its own
+# sniproxy the system resolver is hijacked *by design* — that is precisely what
+# PROBE_DOH_URLS exists to route around — so while a DoH endpoint is in hand the
+# hijack is a fact about an unused resolver, not a defect: it fired once per
+# session, i.e. once per IP per round, and buried the DoH-degradation signal it
+# was meant to accompany under tens of thousands of events a day.
+# ==========================================================
 _sentinel_hijack_check() {
+    [[ -z "$SENTINEL_DOH_URL" ]] || return 0
+
     local sys_ip
     sys_ip=$(getent ahostsv4 www.google.com 2>/dev/null | awk '{print $1; exit}')
     if [[ -n "$sys_ip" ]] && _sentinel_is_private_ip "$sys_ip"; then
@@ -218,9 +229,18 @@ sentinel_net_init() {
     DYNAMIC_IP_PREF="-${IP_PREF:-4}"
 
     # ---- 1. source-IP pinning with drift degradation ----
-    if [[ "$mode" != "doh-only" && -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
-        local raw_bind
-        raw_bind=$(echo "$BIND_IP" | tr -d '[]')
+    # Strip the IPv6 armour *before* validating. ip_pool.sh writes IPv6 into the
+    # per-job config bracketed, and the guard used to test the bracketed string
+    # against a class that admits no "[", so every IPv6 job failed it, skipped
+    # pinning and egressed from the kernel's default source address — silently,
+    # since the degradation warning lives in the branch below. IPv4 jobs matched
+    # and were unaffected, which is why this surfaced as "the whole v6 half of
+    # the pool shares one exit".
+    # The class must not carry backslash escapes either: inside a POSIX bracket
+    # expression "\" is a literal member, so the old "\." merely widened the set.
+    local raw_bind=""
+    [ -n "$BIND_IP" ] && raw_bind=$(echo "$BIND_IP" | tr -d '[]')
+    if [[ "$mode" != "doh-only" && "$raw_bind" =~ ^[0-9a-fA-F:.]+$ ]]; then
         if ! ip addr show 2>/dev/null | grep -Fq "$raw_bind"; then
             _sentinel_net_log "WARN " "configured egress IP ($raw_bind) lost, degraded to default route"
             CURL_BIND_ARGS=()

@@ -125,8 +125,11 @@ if [ -f "${INSTALL_DIR}/core/net_common.sh" ]; then
     source "${INSTALL_DIR}/core/net_common.sh"
     sentinel_net_init
 else
-    if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\.]+$ ]]; then
-        RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+    # [护甲剥离前置] ip_pool.sh 注入的 IPv6 带 []，必须先剥再校验，
+    # 否则带括号的 V6 一律落空、静默降级为默认路由出网。
+    RAW_BIND_IP=""
+    [ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+    if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
         # [v4.1.6 修复] 使用 -Fq 替代 -qw，防止 IPv6 冒号被误认为单词边界导致误杀
         if ! ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
             log_msg "WARN " "检测到配置的出口 IP ($RAW_BIND_IP) 已丢失，自动降级为系统默认路由出网！"

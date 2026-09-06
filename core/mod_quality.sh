@@ -226,11 +226,15 @@ fi
 DYNAMIC_IP_PREF="${IP_PREF:-4}"
 PROBE_ARGS=("-y" "-j" "-f") # 默认注入: 自动确认、JSON格式、明文无掩码IP
 
-# [强壮正则] 支持 V4, V6 以及带有 [] 护甲的 V6 寻址
-if [[ -n "$BIND_IP" && "$BIND_IP" =~ ^[0-9a-fA-F:\[\]\.]+$ ]]; then
-    RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+# [护甲剥离前置] 先剥 [] 再校验。原正则把 "\[\]" 写进字符类，而 POSIX 字符类内
+# 的反斜杠是普通成员、不具转义能力，"\]" 的 "]" 提前闭合了整个类，导致该分支对
+# 任何地址 (含纯 IPv4) 都不成立，深度探测从未真正绑过出口。
+RAW_BIND_IP=""
+[ -n "$BIND_IP" ] && RAW_BIND_IP=$(echo "$BIND_IP" | tr -d '[]')
+if [[ "$RAW_BIND_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
     # 严格探测物理网卡/虚拟 IP 存活状态，防止 IP 漂移导致探针彻底报错
-    if ip addr show 2>/dev/null | grep -qw "$RAW_BIND_IP"; then
+    # 与其余模块一致改用 -Fq: -qw 会把 IPv6 的冒号当作单词边界而误判
+    if ip addr show 2>/dev/null | grep -Fq "$RAW_BIND_IP"; then
         # 挂载原生出网网卡
         PROBE_ARGS+=("-i" "$RAW_BIND_IP")
         
