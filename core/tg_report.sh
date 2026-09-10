@@ -141,7 +141,7 @@ esac
 POOL_BLOCK=""
 if [ -d "${INSTALL_DIR}/state" ]; then
     POOL_BLOCK=$(INSTALL_DIR="$INSTALL_DIR" IP_POOL_FILTER="${IP_POOL_FILTER:-}" python3 - <<'PYAGG'
-import os, sys, time, ipaddress
+import os, sys, time, ipaddress, unicodedata
 
 root = os.environ.get('INSTALL_DIR', '/opt/ip_sentinel')
 state = os.path.join(root, 'state')
@@ -296,18 +296,30 @@ out.append('✅ %d (%.1f%%)  ⚠️ %d  ❌ %d%s  🚨 %d%s'
 # the message stays inside Telegram's 4096-char ceiling.
 ranked = sorted(gcur.items(), key=lambda kv: (-cn_rate(kv[1]), kv[0]))
 shown, hidden = ranked[:8], ranked[8:]
-w = max([len(k) for k, _ in shown] + [4])
-lines = ['%-*s %5s %5s %5s %5s %5s %8s %7s'
-         % (w, '网段', '已测', 'OK', 'DRIFT', 'CN', 'BLIND', '送中率', '环比')]
-alerts = []
+
+# CJK headers occupy two cells in a monospace font while len() counts them as
+# one, so pad by display width and lay the columns out with plain spaces.
+def dwidth(s):
+    return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in s)
+
+def pad(s, w, left=False):
+    fill = ' ' * max(0, w - dwidth(s))
+    return s + fill if left else fill + s
+
+header = ('网段', '已测', 'OK', 'DRIFT', 'CN', 'BLIND', '送中率', '环比')
+rows, alerts = [], []
 for k, d in shown:
     r = cn_rate(d)
     pr = cn_rate(gprev[k]) if k in gprev else None
-    lines.append('%-*s %5d %5d %5d %5d %5d %7.1f%% %7s'
-                 % (w, k, sum(d.values()), d['OK'], d['DRIFT'], d['CN'], d['BLIND'],
-                    r, '  —' if pr is None else ('%+.1f' % (r - pr))))
+    rows.append((k, str(sum(d.values())), str(d['OK']), str(d['DRIFT']),
+                 str(d['CN']), str(d['BLIND']), '%.1f%%' % r,
+                 '—' if pr is None else ('%+.1f' % (r - pr))))
     if r >= 5.0 or (pr is not None and r - pr >= 5.0):
         alerts.append((k, r, pr))
+
+widths = [max(dwidth(c) for c in col) for col in zip(header, *rows)]
+lines = ['  '.join(pad(c, w, left=(i == 0)) for i, (c, w) in enumerate(zip(row, widths)))
+         for row in (header,) + tuple(rows)]
 
 out.append('')
 out.append('🧭 **[网段分布]**')
