@@ -48,8 +48,10 @@ send_ui() {
 }
 
 send_msg() {
-    curl -s --connect-timeout 5 -m 10 -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-        -d "chat_id=$1" -d "text=$2" -d "parse_mode=Markdown" > /dev/null
+    local resp
+    resp=$(curl -s --connect-timeout 5 -m 10 -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+        -d "chat_id=$1" -d "text=$2" -d "parse_mode=Markdown")
+    echo "[$(date '+%H:%M:%S')] send_msg chat=$1 resp=${resp:0:200}" >> /tmp/sendmsg_debug.log
 }
 
 # [核心重构] UI 沉底重绘引擎：抹杀旧面板堆积，永远在最底部唤出新视图
@@ -274,6 +276,7 @@ while true; do
             fi
             
             REPLY_TO_TEXT=$(echo "$UPDATE" | jq -r '.message.reply_to_message.text // empty')
+            echo "[$(date '+%H:%M:%S')] DBG text_len=${#TEXT} reply_len=${#REPLY_TO_TEXT} head=[$(printf '%s' "$TEXT" | head -c 60)]" >> /tmp/reconfig_debug.log
 
             # ----------------------------------------------------------
             # [业务流 B] 拦截并解析别名重命名回执
@@ -301,7 +304,8 @@ while true; do
              fi
              if [ -n "$RECONFIG_CANDIDATE" ]; then
                  # [格式归一] 支持上下两行 (Token/ChatID) 或一行空格分隔
-                 RECONFIG_INPUT=$(echo "$RECONFIG_CANDIDATE" | tr '\n' ' ' | tr -cd '0-9A-Za-z:_ -' | tr -s ' ' | sed 's/^ //; s/ $//')
+                 RECONFIG_INPUT=$(echo "$RECONFIG_CANDIDATE" | tr $'\n' ' ' | tr -cd '0-9A-Za-z:_ -' | tr -s ' ' | sed 's/^ //; s/ $//')
+                 echo "[$(date '+%H:%M:%S')] B2_HIT INPUT=[$RECONFIG_INPUT]" >> /tmp/reconfig_debug.log
                  if [ -n "$RECONFIG_INPUT" ]; then
                      TEXT="do_reconfig:${RECONFIG_INPUT}"
                  fi
@@ -451,22 +455,27 @@ while true; do
                          -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"🔁 请回复本消息填写新 Bot 凭证:\\n第一行: 新 Token (形如 123456789:AAH...)\\n第二行: 新 Chat ID (形如 -1001234567890)\\n*(也支持一行空格分隔)*\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"force_reply\":true}}" > /dev/null
                     ;;
 
-                "do_reconfig:*")
+                do_reconfig:*)
+                    echo "[$(date '+%H:%M:%S')] RC_STEP0 ENTER CHAT_ID=$CHAT_ID INPUT_LEN=${#TEXT}" >> /tmp/reconfig_debug.log
                     RECONFIG_INPUT=$(echo "${TEXT#*:}" | tr -s ' ' | sed 's/^ //; s/ $//')
                     CHAT_ID=$(echo "$CHAT_ID" | tr -cd '0-9-')
                     
                     NEW_TOKEN=$(echo "$RECONFIG_INPUT" | awk '{print $1}')
                     NEW_CHAT_ID=$(echo "$RECONFIG_INPUT" | awk '{print $2}')
+                    echo "[$(date '+%H:%M:%S')] RC_STEP1 PARSED TOKEN_LEN=${#NEW_TOKEN} CHATID=[$NEW_CHAT_ID]" >> /tmp/reconfig_debug.log
                     
                     # [格式清洗] 强校验凭证形态
                     if ! [[ "$NEW_TOKEN" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || ! [[ "$NEW_CHAT_ID" =~ ^-?[0-9]{5,}$ ]]; then
+                        echo "[$(date '+%H:%M:%S')] RC_STEP2 FORMAT_FAIL" >> /tmp/reconfig_debug.log
                         render_msg "$CHAT_ID" "$MSG_ID" "⛔ **凭证格式校验失败**%0AToken 形如 \`123456789:AAH...\`，Chat ID 为纯数字。请重新回复。"
                         continue
                     fi
                     
                     # [步骤 0] Master 端先 getMe 验证新 Token，手误凭证在此拦截，不浪费全舰队流量
                     render_msg "$CHAT_ID" "$MSG_ID" "⏳ 正在验证新 Bot Token 有效性..."
+                    echo "[$(date '+%H:%M:%S')] RC_STEP3 GETME_START" >> /tmp/reconfig_debug.log
                     ME_RESULT=$(curl -s --connect-timeout 5 -m 10 "https://api.telegram.org/bot${NEW_TOKEN}/getMe")
+                    echo "[$(date '+%H:%M:%S')] RC_STEP4 GETME_DONE resp=${ME_RESULT:0:120}" >> /tmp/reconfig_debug.log
                     if ! echo "$ME_RESULT" | grep -q '"ok":true'; then
                         render_msg "$CHAT_ID" "$MSG_ID" "❌ **新 Token 验证失败**%0A$(echo "$ME_RESULT" | jq -r '.description // .error_code' 2>/dev/null)%0A凭证未下发，请重新填写。"
                         continue
@@ -474,6 +483,7 @@ while true; do
                     NEW_BOT_NAME=$(echo "$ME_RESULT" | jq -r '.result.username // "未知"' 2>/dev/null)
                     
                     NODE_DATA=$(db_exec "SELECT node_name, agent_ip, agent_port FROM nodes WHERE chat_id='$CHAT_ID' AND enable_ota='true';")
+                    echo "[$(date '+%H:%M:%S')] RC_STEP5 NODES_FOUND=$(echo "$NODE_DATA" | grep -c '|')" >> /tmp/reconfig_debug.log
                     if [ -z "$NODE_DATA" ]; then
                         render_msg "$CHAT_ID" "$MSG_ID" "⚠️ 您名下暂无开启 OTA 权限的记录节点，无需切换。"
                         continue
@@ -491,7 +501,9 @@ while true; do
                     
                     while IFS='|' read -r NNAME AIP APORT; do
                         [ -z "$NNAME" ] && continue
+                        echo "[$(date '+%H:%M:%S')] RC_STEP6 CALL $NNAME ($AIP:$APORT)" >> /tmp/reconfig_debug.log
                         RESPONSE=$(call_agent "$AIP" "$APORT" "/trigger_reconfig" "b64=${RECONFIG_B64}")
+                        echo "[$(date '+%H:%M:%S')] RC_STEP7 RESP $NNAME => ${RESPONSE:0:80}" >> /tmp/reconfig_debug.log
                         if [[ "$RESPONSE" == *"Action Accepted"* ]]; then
                             SUCCESS_COUNT=$((SUCCESS_COUNT+1))
                         else
@@ -499,6 +511,8 @@ while true; do
                         fi
                         sleep 1.2
                     done <<< "$NODE_DATA"
+                    
+                    echo "[$(date '+%H:%M:%S')] RC_STEP8 SUMMARY success=$SUCCESS_COUNT/$TOTAL_COUNT" >> /tmp/reconfig_debug.log
                     
                     if [ -z "$FAIL_LIST" ]; then
                         SUMMARY="✅ **全舰队切换完成**%0A成功: ${SUCCESS_COUNT}/${TOTAL_COUNT} 台%0A%0A📋 **后续操作清单**:%0A1. 前往新 Bot 查看注册回执 (各节点已自动发送)。%0A2. 在新机器上部署新司令部 (或直接迁移本库)。%0A3. 确认新司令部接管后，**停止旧司令部的 tg_master 进程**。"
