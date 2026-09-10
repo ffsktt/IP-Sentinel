@@ -141,7 +141,7 @@ esac
 POOL_BLOCK=""
 if [ -d "${INSTALL_DIR}/state" ]; then
     POOL_BLOCK=$(INSTALL_DIR="$INSTALL_DIR" IP_POOL_FILTER="${IP_POOL_FILTER:-}" python3 - <<'PYAGG'
-import os, sys, time, ipaddress, unicodedata
+import os, sys, time, ipaddress
 
 root = os.environ.get('INSTALL_DIR', '/opt/ip_sentinel')
 state = os.path.join(root, 'state')
@@ -297,28 +297,24 @@ out.append('✅ %d (%.1f%%)  ⚠️ %d  ❌ %d%s  🚨 %d%s'
 ranked = sorted(gcur.items(), key=lambda kv: (-cn_rate(kv[1]), kv[0]))
 shown, hidden = ranked[:8], ranked[8:]
 
-# CJK headers occupy two cells in a monospace font while len() counts them as
-# one, so pad by display width and lay the columns out with plain spaces.
-def dwidth(s):
-    return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in s)
-
-def pad(s, w, left=False):
-    fill = ' ' * max(0, w - dwidth(s))
-    return s + fill if left else fill + s
-
-header = ('网段', '已测', 'OK', 'DRIFT', 'CN', 'BLIND', '送中率', '环比')
+# Every cell here must stay ASCII: Telegram's monospace fonts carry no CJK
+# glyphs, so a Chinese header falls back to a proportional font whose advance
+# width is not two cells, and mobile clients cannot be pointed at a CJK mono
+# font to fix it. Column widths then follow plain len().
+header = ('PREFIX', 'TOTAL', 'OK', 'DRIFT', 'CN', 'BLIND', 'CN%', 'CHG')
 rows, alerts = [], []
 for k, d in shown:
     r = cn_rate(d)
     pr = cn_rate(gprev[k]) if k in gprev else None
     rows.append((k, str(sum(d.values())), str(d['OK']), str(d['DRIFT']),
                  str(d['CN']), str(d['BLIND']), '%.1f%%' % r,
-                 '—' if pr is None else ('%+.1f' % (r - pr))))
+                 '--' if pr is None else ('%+.1f' % (r - pr))))
     if r >= 5.0 or (pr is not None and r - pr >= 5.0):
         alerts.append((k, r, pr))
 
-widths = [max(dwidth(c) for c in col) for col in zip(header, *rows)]
-lines = ['  '.join(pad(c, w, left=(i == 0)) for i, (c, w) in enumerate(zip(row, widths)))
+widths = [max(len(c) for c in col) for col in zip(header, *rows)]
+lines = ['  '.join(c.ljust(w) if i == 0 else c.rjust(w)
+                   for i, (c, w) in enumerate(zip(row, widths)))
          for row in (header,) + tuple(rows)]
 
 out.append('')
