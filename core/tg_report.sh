@@ -141,7 +141,7 @@ esac
 POOL_BLOCK=""
 if [ -d "${INSTALL_DIR}/state" ]; then
     POOL_BLOCK=$(INSTALL_DIR="$INSTALL_DIR" IP_POOL_FILTER="${IP_POOL_FILTER:-}" python3 - <<'PYAGG'
-import os, sys, time, ipaddress
+import os, sys, time, ipaddress, random
 
 root = os.environ.get('INSTALL_DIR', '/opt/ip_sentinel')
 state = os.path.join(root, 'state')
@@ -330,21 +330,47 @@ for k, r, pr in alerts[:2]:
     else:
         out.append('🔴 `%s` 送中率 %.1f%%，建议核查' % (k, r))
 
-# Rank offenders by how bad the owning segment is, then by recency: a one-off
-# CN in a healthy /24 is noise, the cluster in a degraded segment is the finding.
-cns = sorted(((ts, ip, detail) for ip, (ts, v, detail) in cur.items() if v == 'CN'),
-             key=lambda r: (-gcur.get(group_of(r[1]), {}).get('CN', 0), -r[0]))
-if cns:
+hits = [(ts, ipaddress.ip_address(ip), verdict, detail)
+        for ip, (ts, verdict, detail) in cur.items() if verdict in ('DRIFT', 'CN')]
+v4_hits = sorted((row for row in hits if row[1].version == 4), key=lambda row: row[1])
+v6_hits = [row for row in hits if row[1].version == 6]
+
+if hits:
     out.append('')
-    out.append('❌ **[送中样本]** Jump/Prem/Music')
-    for ts, ip, detail in cns[:3]:
+    out.append('❌ **[异常地址：漂移 + 送中]**')
+
+if v4_hits:
+    by_24 = {}
+    for ts, ip, verdict, detail in v4_hits:
+        network = ipaddress.ip_network('%s/24' % ip, strict=False)
+        by_24.setdefault(network, []).append(int(ip) - int(network.network_address))
+
+    out.append('IPv4 合并全量 %d · 图每格 /28（`.`=0，`1-F/#`=1-15/16）' % len(v4_hits))
+    for network, offsets in sorted(by_24.items(), key=lambda item: item[0].network_address):
+        counts = [sum(start <= offset < start + 16 for offset in offsets)
+                  for start in range(0, 256, 16)]
+        hit_map = ''.join('.' if count == 0 else format(count, 'X') if count < 16 else '#'
+                          for count in counts)
+        ranges = []
+        start = end = offsets[0]
+        for offset in offsets[1:]:
+            if offset == end + 1:
+                end = offset
+            else:
+                ranges.append(str(start) if start == end else '%d-%d' % (start, end))
+                start = end = offset
+        ranges.append(str(start) if start == end else '%d-%d' % (start, end))
+        out.append('`%s` `%s`' % (network, hit_map))
+        out.append('异常地址范围 `%s`' % ','.join(ranges))
+
+if v6_hits:
+    sample = random.SystemRandom().sample(v6_hits, min(3, len(v6_hits)))
+    out.append('IPv6 随机抽查 %d/%d · 裁决/Jump/Prem/Music' % (len(sample), len(v6_hits)))
+    for ts, ip, verdict, detail in sorted(sample, key=lambda row: row[1]):
         kv = dict(x.split('=', 1) for x in detail.split(',') if '=' in x)
-        out.append('`%s`  %s/%s/%s  %.1fh 前'
-                   % (ip, kv.get('jump', 'x'), kv.get('pr', 'x'),
+        out.append('`%s`  %s/%s/%s/%s  %.1fh 前'
+                   % (ip, verdict, kv.get('jump', 'x'), kv.get('pr', 'x'),
                       kv.get('mu', 'x'), (now - ts) / 3600.0))
-    if len(cns) > 3:
-        top = max(gcur.items(), key=lambda kv: kv[1]['CN'])
-        out.append('_共 %d 个，其中 %d 个属 `%s`_' % (len(cns), top[1]['CN'], top[0]))
 
 if t_total:
     out.append('')
